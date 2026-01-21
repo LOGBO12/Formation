@@ -9,6 +9,8 @@ class MessageCommunaute extends Model
 {
     use HasFactory;
 
+    protected $table = 'messages_communaute';
+
     protected $fillable = [
         'communaute_id',
         'user_id',
