@@ -4,12 +4,18 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\DomaineController;
-
+use App\Http\Controllers\Api\AdminController;
 /*
 |--------------------------------------------------------------------------
 | API Routes
 |--------------------------------------------------------------------------
 */
+// Gestion des utilisateurs (Super Admin)
+Route::middleware(['auth:sanctum', 'check.profile'])->prefix('admin')->group(function () {
+    Route::get('/users', [AdminController::class, 'users']);
+    Route::patch('/users/{user}/toggle-status', [AdminController::class, 'toggleUserStatus']);
+    Route::get('/formations', [AdminController::class, 'allFormations']);
+});
 
 // Routes publiques (pas d'authentification requise)
 Route::prefix('auth')->group(function () {
