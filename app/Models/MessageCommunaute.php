@@ -35,9 +35,9 @@ class MessageCommunaute extends Model
         'edited_at' => 'datetime',
     ];
 
-    protected $with = ['user', 'reactions', 'replies'];
+    /*protected $with = ['user', 'reactions', 'replies'];
     protected $withCount = ['reactions', 'replies', 'views'];
-
+*/
     // ============ RELATIONS ============
 
     public function communaute()
