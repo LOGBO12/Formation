@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\QuizController;
 use App\Http\Controllers\Api\InscriptionController;
 use App\Http\Controllers\Api\CommunauteController;
 use App\Http\Controllers\Api\StatistiquesController;
+use App\Http\Controllers\Api\FormateurController;
 
 /*
 |--------------------------------------------------------------------------
@@ -76,6 +77,13 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/chapitres/{chapitre}', [ApprenantController::class, 'lireChapitre']);
             Route::post('/chapitres/{chapitre}/terminer', [ApprenantController::class, 'terminerChapitre']);
         });
+
+        // Dans routes/api.php, section formateur
+Route::prefix('formateur')->middleware(['auth:sanctum', 'check.profile'])->group(function () {
+    // ... autres routes formateur ...
+    
+    Route::get('/mes-communautes', [FormateurController::class, 'mesCommunautes']);
+});
 
         // ==========================================
         // ROUTES SUPER ADMIN
