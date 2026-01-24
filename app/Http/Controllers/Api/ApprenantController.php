@@ -305,198 +305,270 @@ class ApprenantController extends Controller
      * Mes communautés
      */
     public function mesCommunautes(Request $request)
-    {
-        try {
-            $userId = $request->user()->id;
+{
+    try {
+        $userId = $request->user()->id;
+        
+        \Log::info('🔵 Chargement communautés pour user:', ['id' => $userId]);
 
-            $communautes = Communaute::whereHas('membres', function($query) use ($userId) {
-                $query->where('user_id', $userId);
-            })
-            ->with([
-                'formation.domaine',
-                'formation.formateur',
-                'membres'
-            ])
-            ->withCount('messages')
+        // Version optimisée sans lazy loading
+        $communautes = DB::table('communautes')
+            ->join('communaute_membres', 'communautes.id', '=', 'communaute_membres.communaute_id')
+            ->join('formations', 'communautes.formation_id', '=', 'formations.id')
+            ->leftJoin('domaines', 'formations.domaine_id', '=', 'domaines.id')
+            ->leftJoin('users', 'formations.formateur_id', '=', 'users.id')
+            ->where('communaute_membres.user_id', $userId)
+            ->select(
+                'communautes.id',
+                'communautes.nom',
+                'communautes.description',
+                'formations.id as formation_id',
+                'formations.titre as formation_titre',
+                'domaines.name as domaine_name',
+                'users.name as formateur_name',
+                'communaute_membres.role as mon_role',
+                'communaute_membres.is_muted',
+                'communaute_membres.joined_at'
+            )
             ->get()
-            ->map(function ($communaute) use ($userId) {
-                $membre = $communaute->membres->firstWhere('id', $userId);
+            ->map(function ($item) {
+                // Compter les membres et messages séparément
+                $totalMembres = DB::table('communaute_membres')
+                    ->where('communaute_id', $item->id)
+                    ->count();
+                
+                $totalMessages = DB::table('messages_communaute')
+                    ->where('communaute_id', $item->id)
+                    ->whereNull('deleted_at')
+                    ->count();
                 
                 return [
-                    'id' => $communaute->id,
-                    'nom' => $communaute->nom,
-                    'description' => $communaute->description,
+                    'id' => $item->id,
+                    'nom' => $item->nom,
+                    'description' => $item->description,
                     'formation' => [
-                        'id' => $communaute->formation->id,
-                        'titre' => $communaute->formation->titre,
-                        'domaine' => $communaute->formation->domaine ? $communaute->formation->domaine->name : 'N/A',
-                        'formateur' => $communaute->formation->formateur ? $communaute->formation->formateur->name : 'N/A',
+                        'id' => $item->formation_id,
+                        'titre' => $item->formation_titre,
+                        'domaine' => $item->domaine_name ?? 'N/A',
+                        'formateur' => $item->formateur_name ?? 'N/A',
                     ],
-                    'total_membres' => $communaute->membres->count(),
-                    'total_messages' => $communaute->messages_count,
-                    'mon_role' => $membre && $membre->pivot ? $membre->pivot->role : 'membre',
-                    'is_muted' => $membre && $membre->pivot ? $membre->pivot->is_muted : false,
-                    'joined_at' => $membre && $membre->pivot ? $membre->pivot->joined_at : null,
+                    'total_membres' => $totalMembres,
+                    'total_messages' => $totalMessages,
+                    'mon_role' => $item->mon_role ?? 'membre',
+                    'is_muted' => (bool)$item->is_muted,
+                    'joined_at' => $item->joined_at,
                 ];
             });
 
-            return response()->json([
-                'success' => true,
-                'communautes' => $communautes,
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Erreur communautés: ' . $e->getMessage());
-            \Log::error('Stack trace: ' . $e->getTraceAsString());
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors du chargement des communautés',
-                'error' => $e->getMessage()
-            ], 500);
-        }
+        \Log::info('✅ Communautés chargées:', ['count' => $communautes->count()]);
+
+        return response()->json([
+            'success' => true,
+            'communautes' => $communautes,
+        ]);
+        
+    } catch (\Exception $e) {
+        \Log::error('❌ Erreur mesCommunautes:', [
+            'message' => $e->getMessage(),
+            'line' => $e->getLine(),
+        ]);
+        
+        return response()->json([
+            'success' => false,
+            'message' => 'Erreur lors du chargement des communautés',
+            'error' => config('app.debug') ? $e->getMessage() : null
+        ], 500);
     }
+}
 
     /**
-     * Formations terminées
-     */
-    public function formationsTerminees(Request $request)
-    {
-        try {
-            $inscriptions = Inscription::where('inscriptions.user_id', $request->user()->id)
-                ->whereIn('inscriptions.statut', ['active', 'approuvee'])
-                ->where('inscriptions.progres', 100)
-                ->with(['formation.domaine', 'formation.formateur'])
-                ->latest('inscriptions.updated_at')
-                ->get();
+ * Contenu d'une formation (après inscription)
+ */
+public function contenuFormation(Request $request, Formation $formation)
+{
+    try {
+        // Vérifier l'inscription
+        $inscription = Inscription::where('inscriptions.user_id', $request->user()->id)
+            ->where('inscriptions.formation_id', $formation->id)
+            ->whereIn('inscriptions.statut', ['active', 'approuvee'])
+            ->where('inscriptions.is_blocked', false)
+            ->first();
 
-            return response()->json([
-                'success' => true,
-                'formations' => $inscriptions,
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Erreur formations terminées: ' . $e->getMessage());
+        if (!$inscription) {
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur lors du chargement',
-                'error' => $e->getMessage()
-            ], 500);
+                'message' => 'Vous n\'avez pas accès à cette formation',
+            ], 403);
         }
-    }
 
-    /**
-     * Contenu d'une formation (après inscription)
-     */
-    public function contenuFormation(Request $request, Formation $formation)
-    {
-        try {
-            // Vérifier l'inscription
-            $inscription = Inscription::where('inscriptions.user_id', $request->user()->id)
-                ->where('inscriptions.formation_id', $formation->id)
-                ->whereIn('inscriptions.statut', ['active', 'approuvee'])
-                ->where('inscriptions.is_blocked', false)
-                ->first();
+        // Charger toutes les relations nécessaires
+        $formation->load([
+            'domaine',
+            'formateur',
+            'modules' => function ($query) {
+                $query->orderBy('ordre');
+            },
+            'modules.chapitres' => function ($query) {
+                $query->orderBy('ordre');
+            },
+            'modules.chapitres.quiz' => function ($query) {
+                $query->with('questions.options');
+            },
+            'communaute'
+        ]);
 
-            if (!$inscription) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Vous n\'avez pas accès à cette formation',
-                ], 403);
+        // 🔥 IMPORTANT : Récupérer la progression pour chaque chapitre
+        $userId = $request->user()->id;
+        
+        foreach ($formation->modules as $module) {
+            foreach ($module->chapitres as $chapitre) {
+                // Vérifier si le chapitre est complété
+                $progression = $chapitre->progressions()
+                    ->where('user_id', $userId)
+                    ->first();
+                
+                $chapitre->is_completed = $progression ? $progression->is_completed : false;
+                $chapitre->date_completion = $progression ? $progression->date_completion : null;
+                
+                // 🎯 Pour les quiz, charger les résultats de l'utilisateur
+                if ($chapitre->type === 'quiz' && $chapitre->quiz) {
+                    $chapitre->quiz->mes_resultats = $chapitre->quiz->resultats()
+                        ->where('user_id', $userId)
+                        ->latest()
+                        ->get();
+                    
+                    // Masquer les bonnes réponses (sécurité)
+                    if ($chapitre->quiz->questions) {
+                        foreach ($chapitre->quiz->questions as $question) {
+                            if ($question->options) {
+                                foreach ($question->options as $option) {
+                                    // On cache la bonne réponse avant l'affichage du quiz
+                                    $option->makeHidden(['is_correct']);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // 📹 Pour les vidéos et PDFs, s'assurer que le chemin est correct
+                if (in_array($chapitre->type, ['video', 'pdf'])) {
+                    \Log::info("Chapitre {$chapitre->id} - Type: {$chapitre->type}, Contenu: {$chapitre->contenu}");
+                }
             }
+        }
 
-            // Charger toutes les relations nécessaires
-            $formation->load([
-                'domaine',
-                'formateur',
-                'modules.chapitres' => function ($query) {
-                    $query->orderBy('ordre');
-                },
-                'communaute'
-            ]);
+        return response()->json([
+            'success' => true,
+            'formation' => $formation,
+            'inscription' => $inscription,
+            'progres_global' => $inscription->progres,
+        ]);
+    } catch (\Exception $e) {
+        \Log::error('Erreur contenu formation: ' . $e->getMessage());
+        \Log::error('Stack trace: ' . $e->getTraceAsString());
+        return response()->json([
+            'success' => false,
+            'message' => 'Erreur lors du chargement',
+            'error' => $e->getMessage()
+        ], 500);
+    }
+}
 
-            // Récupérer la progression pour chaque chapitre
-            $formation->modules->each(function ($module) use ($request) {
-                $module->chapitres->each(function ($chapitre) use ($request) {
-                    $chapitre->is_completed = $chapitre->estCompletePar($request->user()->id);
-                });
-            });
+   /**
+ * Lire un chapitre spécifique
+ */
+public function lireChapitre(Request $request, Chapitre $chapitre)
+{
+    try {
+        // Charger les relations
+        $chapitre->load([
+            'module.formation',
+            'quiz' => function ($query) {
+                $query->with('questions.options');
+            }
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'formation' => $formation,
-                'inscription' => $inscription,
-                'progres_global' => $inscription->progres,
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Erreur contenu formation: ' . $e->getMessage());
+        // Vérifier l'accès
+        $formation = $chapitre->module->formation;
+        $inscription = Inscription::where('inscriptions.user_id', $request->user()->id)
+            ->where('inscriptions.formation_id', $formation->id)
+            ->whereIn('inscriptions.statut', ['active', 'approuvee'])
+            ->where('inscriptions.is_blocked', false)
+            ->first();
+
+        if (!$inscription) {
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur lors du chargement',
-                'error' => $e->getMessage()
-            ], 500);
+                'message' => 'Vous n\'avez pas accès à ce contenu',
+            ], 403);
         }
-    }
 
-    /**
-     * Lire un chapitre spécifique
-     */
-    public function lireChapitre(Request $request, Chapitre $chapitre)
-    {
-        try {
-            // Charger les relations
-            $chapitre->load(['module.formation', 'quiz.questions.options']);
+        // Vérifier si le chapitre est déjà complété
+        $progression = $chapitre->progressions()
+            ->where('user_id', $request->user()->id)
+            ->first();
 
-            // Vérifier l'accès
-            $formation = $chapitre->module->formation;
-            $inscription = Inscription::where('inscriptions.user_id', $request->user()->id)
-                ->where('inscriptions.formation_id', $formation->id)
-                ->whereIn('inscriptions.statut', ['active', 'approuvee'])
-                ->where('inscriptions.is_blocked', false)
-                ->first();
+        $chapitre->is_completed = $progression ? $progression->is_completed : false;
+        $chapitre->date_completion = $progression ? $progression->date_completion : null;
 
-            if (!$inscription) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Vous n\'avez pas accès à ce contenu',
-                ], 403);
-            }
-
-            // Vérifier si le chapitre est déjà complété
-            $progression = $chapitre->progressions()
+        // Si c'est un quiz, charger les résultats de l'utilisateur
+        if ($chapitre->type === 'quiz' && $chapitre->quiz) {
+            $chapitre->quiz->mes_resultats = $chapitre->quiz->resultats()
                 ->where('user_id', $request->user()->id)
-                ->first();
-
-            $chapitre->is_completed = $progression ? $progression->is_completed : false;
-            $chapitre->date_completion = $progression ? $progression->date_completion : null;
-
-            // Si c'est un quiz, charger les résultats de l'utilisateur
-            if ($chapitre->type === 'quiz' && $chapitre->quiz) {
-                $chapitre->quiz->mes_resultats = $chapitre->quiz->resultats()
-                    ->where('user_id', $request->user()->id)
-                    ->latest()
-                    ->get();
+                ->latest()
+                ->get();
+            
+            // 🔒 Masquer les bonnes réponses pour éviter la triche
+            if ($chapitre->quiz->questions) {
+                foreach ($chapitre->quiz->questions as $question) {
+                    if ($question->options) {
+                        foreach ($question->options as $option) {
+                            $option->makeHidden(['is_correct']);
+                        }
+                    }
+                }
             }
-
-            // Récupérer le chapitre précédent et suivant
-            $chapitres = $chapitre->module->chapitres()->orderBy('ordre')->get();
-            $currentIndex = $chapitres->search(function ($item) use ($chapitre) {
-                return $item->id === $chapitre->id;
-            });
-
-            $chapitre->chapitre_precedent = $currentIndex > 0 ? $chapitres[$currentIndex - 1] : null;
-            $chapitre->chapitre_suivant = $currentIndex < $chapitres->count() - 1 ? $chapitres[$currentIndex + 1] : null;
-
-            return response()->json([
-                'success' => true,
-                'chapitre' => $chapitre,
-            ]);
-        } catch (\Exception $e) {
-            \Log::error('Erreur lire chapitre: ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors du chargement',
-                'error' => $e->getMessage()
-            ], 500);
         }
+
+        // 🔍 Log pour déboguer
+        \Log::info("Lecture chapitre {$chapitre->id}", [
+            'type' => $chapitre->type,
+            'contenu_length' => strlen($chapitre->contenu ?? ''),
+            'has_quiz' => $chapitre->quiz ? 'oui' : 'non',
+        ]);
+
+        // Récupérer le chapitre précédent et suivant
+        $chapitres = $chapitre->module->chapitres()->orderBy('ordre')->get();
+        $currentIndex = $chapitres->search(function ($item) use ($chapitre) {
+            return $item->id === $chapitre->id;
+        });
+
+        $chapitre->chapitre_precedent = null;
+        $chapitre->chapitre_suivant = null;
+
+        if ($currentIndex !== false) {
+            if ($currentIndex > 0) {
+                $chapitre->chapitre_precedent = $chapitres[$currentIndex - 1];
+            }
+            if ($currentIndex < $chapitres->count() - 1) {
+                $chapitre->chapitre_suivant = $chapitres[$currentIndex + 1];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'chapitre' => $chapitre,
+        ]);
+    } catch (\Exception $e) {
+        \Log::error('Erreur lire chapitre: ' . $e->getMessage());
+        \Log::error('Stack trace: ' . $e->getTraceAsString());
+        return response()->json([
+            'success' => false,
+            'message' => 'Erreur lors du chargement',
+            'error' => $e->getMessage()
+        ], 500);
     }
+}
 
     /**
      * Marquer un chapitre comme terminé

@@ -160,22 +160,45 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/{inscription}/progression', [InscriptionController::class, 'progression']);
         });
 
-        // Communautés
+        // ==========================================
+        // ROUTES COMMUNAUTÉS (CORRIGÉES)
+        // ==========================================
         Route::prefix('communautes')->group(function () {
+            // MESSAGES DE BASE
             Route::get('/{communaute}', [CommunauteController::class, 'show']);
             Route::get('/{communaute}/messages', [CommunauteController::class, 'messages']);
             Route::post('/{communaute}/messages', [CommunauteController::class, 'envoyerMessage']);
             Route::post('/{communaute}/annonces', [CommunauteController::class, 'envoyerAnnonce']);
+            
+            // GESTION DES MESSAGES
+            Route::put('/messages/{message}', [CommunauteController::class, 'updateMessage']);
+            Route::delete('/messages/{message}', [CommunauteController::class, 'supprimerMessage']);
+            Route::post('/messages/{message}/epingler', [CommunauteController::class, 'epinglerMessage']);
+            Route::post('/messages/{message}/desepingler', [CommunauteController::class, 'desepinglerMessage']);
+            
+            // RÉACTIONS
+            Route::post('/messages/{message}/reactions', [CommunauteController::class, 'toggleReaction']);
+            
+            // THREADS / RÉPONSES
+            Route::get('/messages/{message}/replies', [CommunauteController::class, 'getReplies']);
+            
+            // VUES / READ RECEIPTS
+            Route::post('/messages/{message}/view', [CommunauteController::class, 'markAsViewed']);
+            
+            // MENTIONS
+            Route::get('/mentions/unread', [CommunauteController::class, 'getUnreadMentions']);
+            Route::post('/mentions/{mention}/read', [CommunauteController::class, 'markMentionAsRead']);
+            
+            // RECHERCHE
+            Route::get('/{communaute}/search', [CommunauteController::class, 'searchMessages']);
+            
+            // STATISTIQUES
+            Route::get('/{communaute}/stats', [CommunauteController::class, 'getStats']);
+            
+            // MEMBRES
             Route::get('/{communaute}/membres', [CommunauteController::class, 'membres']);
             Route::post('/{communaute}/membres/{userId}/muter', [CommunauteController::class, 'muterMembre']);
             Route::post('/{communaute}/membres/{userId}/demuter', [CommunauteController::class, 'demuterMembre']);
-        });
-
-        // Messages communauté
-        Route::prefix('messages')->group(function () {
-            Route::post('/{message}/epingler', [CommunauteController::class, 'epinglerMessage']);
-            Route::post('/{message}/desepingler', [CommunauteController::class, 'desepinglerMessage']);
-            Route::delete('/{message}', [CommunauteController::class, 'supprimerMessage']);
         });
 
         // Statistiques Formateur
@@ -187,4 +210,31 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/graphique-inscriptions', [StatistiquesController::class, 'graphiqueInscriptions']);
         });
     });
+});
+
+// ==========================================
+// ROUTE DE TEST (À SUPPRIMER EN PRODUCTION)
+// ==========================================
+Route::get('/test-storage', function () {
+    $chapitresPath = storage_path('app/public/chapitres');
+    $publicStoragePath = public_path('storage');
+    
+    $chapitres = [];
+    if (file_exists($chapitresPath)) {
+        $files = scandir($chapitresPath);
+        $chapitres = array_filter($files, function($file) use ($chapitresPath) {
+            return is_file($chapitresPath . '/' . $file);
+        });
+    }
+    
+    return response()->json([
+        'storage_path_exists' => file_exists($chapitresPath),
+        'storage_path' => $chapitresPath,
+        'public_storage_exists' => file_exists($publicStoragePath),
+        'public_storage_is_link' => is_link($publicStoragePath),
+        'public_storage_target' => is_link($publicStoragePath) ? readlink($publicStoragePath) : null,
+        'files_in_chapitres' => array_values($chapitres),
+        'app_url' => config('app.url'),
+        'storage_url' => asset('storage'),
+    ]);
 });
