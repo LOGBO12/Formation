@@ -151,15 +151,23 @@ class CommunauteController extends Controller
                 ], 403);
             }
 
-            // Validation selon le type
+            // ✅ VALIDATION CORRIGÉE - Le message peut être vide si des fichiers sont présents
             $rules = [
-                'message' => 'required_without:files|string|max:5000',
+                'message' => 'nullable|string|max:5000',  // ✅ nullable au lieu de required_without
                 'type' => 'required|in:text,image,video,audio,pdf,file',
                 'parent_message_id' => 'nullable|exists:messages_communaute,id',
                 'files.*' => 'nullable|file|max:20480', // 20MB max
             ];
 
+            // ✅ Validation personnalisée : au moins un message OU des fichiers
             $request->validate($rules);
+
+            if (empty($request->message) && !$request->hasFile('files')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Veuillez fournir un message ou un fichier',
+                ], 422);
+            }
 
             $attachments = [];
             $attachmentsMeta = [];
@@ -177,31 +185,46 @@ class CommunauteController extends Controller
                 }
             }
 
-            // Créer le message
+            // ✅ Créer le message avec un texte vide si nécessaire
             $message = MessageCommunaute::create([
                 'communaute_id' => $communaute->id,
                 'user_id' => $request->user()->id,
                 'parent_message_id' => $request->parent_message_id,
-                'message' => $request->message ?? '',
+                'message' => $request->message ?? '',  // ✅ String vide par défaut
                 'type' => $request->type,
                 'attachments' => $attachments,
                 'attachments_meta' => $attachmentsMeta,
             ]);
 
             // Créer les mentions si présentes
-            $message->createMentions();
+            if (!empty($request->message)) {
+                $message->createMentions();
+            }
 
             // Charger les relations
-            $message->load('user:id,name,email', 'parent.user:id,name');
+            $message->load('user:id,name,email', 'parent.user:id,name', 'reactions');
 
             return response()->json([
                 'success' => true,
                 'message' => $message,
             ], 201);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('❌ Validation error:', [
+                'errors' => $e->errors(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur de validation',
+                'errors' => $e->errors(),
+            ], 422);
+
         } catch (\Exception $e) {
             \Log::error('❌ Erreur envoi message:', [
                 'message' => $e->getMessage(),
+                'line' => $e->getLine(),
+                'file' => $e->getFile(),
             ]);
 
             return response()->json([

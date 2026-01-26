@@ -12,9 +12,10 @@ class SuperAdminSeeder extends Seeder
     public function run(): void
     {
         // Créer les rôles
-        Role::firstOrCreate(['name' => 'super_admin']);
-        Role::firstOrCreate(['name' => 'formateur']);
-        Role::firstOrCreate(['name' => 'apprenant']);
+        Role::firstOrCreate(['name' => 'super_admin', 'guard_name' => 'web']);
+        Role::firstOrCreate(['name' => 'formateur', 'guard_name' => 'web']);
+        Role::firstOrCreate(['name' => 'apprenant', 'guard_name' => 'web']);
+
 
         // Créer le Super Admin
         $superAdmin = User::firstOrCreate(
