@@ -17,7 +17,7 @@ class CommunauteController extends Controller
     public function show(Request $request, Communaute $communaute)
     {
         try {
-            \Log::info('🔵 Show communauté', ['id' => $communaute->id, 'user' => $request->user()->id]);
+            \Log::info(' Show communauté', ['id' => $communaute->id, 'user' => $request->user()->id]);
 
             $membre = DB::table('communaute_membres')
                 ->where('communaute_id', $communaute->id)
@@ -77,54 +77,61 @@ class CommunauteController extends Controller
     }
 
     /**
-     * Messages d'une communauté (avec pagination)
-     */
-    public function messages(Request $request, Communaute $communaute)
-    {
-        try {
-            $estMembre = DB::table('communaute_membres')
-                ->where('communaute_id', $communaute->id)
-                ->where('user_id', $request->user()->id)
-                ->exists();
+ * Messages d'une communauté (avec pagination)
+ */
+public function messages(Request $request, Communaute $communaute)
+{
+    try {
+        $estMembre = DB::table('communaute_membres')
+            ->where('communaute_id', $communaute->id)
+            ->where('user_id', $request->user()->id)
+            ->exists();
 
-            if (!$estMembre) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Vous n\'êtes pas membre de cette communauté',
-                ], 403);
-            }
-
-            $messages = MessageCommunaute::where('communaute_id', $communaute->id)
-                ->with([
-                    'user:id,name,email',
-                    'parent.user:id,name', // Message parent pour les réponses
-                    'reactions.user:id,name',
-                    'replies.user:id,name'
-                ])
-                ->whereNull('parent_message_id')
-                ->whereNull('deleted_at')
-                ->orderBy('is_pinned', 'desc')
-                ->orderBy('is_announcement', 'desc')
-                ->orderBy('created_at', 'asc')
-                ->paginate(100);
-
-            return response()->json([
-                'success' => true,
-                'messages' => $messages,
-            ]);
-
-        } catch (\Exception $e) {
-            \Log::error('❌ Erreur messages:', [
-                'message' => $e->getMessage(),
-            ]);
-
+        if (!$estMembre) {
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur lors du chargement des messages',
-                'error' => config('app.debug') ? $e->getMessage() : null
-            ], 500);
+                'message' => 'Vous n\'êtes pas membre de cette communauté',
+            ], 403);
         }
+
+        // CORRECTION : Charger TOUS les messages (avec et sans parent)
+        $messages = MessageCommunaute::where('communaute_id', $communaute->id)
+            ->with([
+                'user:id,name,email',
+                'parent' => function($query) {
+                    $query->select('id', 'message', 'user_id', 'type', 'attachments');
+                },
+                'parent.user:id,name',
+                'reactions.user:id,name',
+            ])
+            ->whereNull('deleted_at')
+            ->orderBy('is_pinned', 'desc')
+            ->orderBy('is_announcement', 'desc')
+            ->orderBy('created_at', 'asc')
+            ->paginate(100);
+
+        \Log::info(' Messages chargés:', [
+            'total' => $messages->total(),
+            'avec_parent' => $messages->filter(fn($m) => $m->parent_message_id !== null)->count(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'messages' => $messages,
+        ]);
+
+    } catch (\Exception $e) {
+        \Log::error('❌ Erreur messages:', [
+            'message' => $e->getMessage(),
+        ]);
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Erreur lors du chargement des messages',
+            'error' => config('app.debug') ? $e->getMessage() : null
+        ], 500);
     }
+}
 
     /**
      * Envoyer un message (texte, audio, fichier, vidéo, image)
@@ -151,15 +158,15 @@ class CommunauteController extends Controller
                 ], 403);
             }
 
-            // ✅ VALIDATION CORRIGÉE - Le message peut être vide si des fichiers sont présents
+            //  VALIDATION CORRIGÉE - Le message peut être vide si des fichiers sont présents
             $rules = [
-                'message' => 'nullable|string|max:5000',  // ✅ nullable au lieu de required_without
+                'message' => 'nullable|string|max:5000',  //  nullable au lieu de required_without
                 'type' => 'required|in:text,image,video,audio,pdf,file',
                 'parent_message_id' => 'nullable|exists:messages_communaute,id',
                 'files.*' => 'nullable|file|max:20480', // 20MB max
             ];
 
-            // ✅ Validation personnalisée : au moins un message OU des fichiers
+            //  Validation personnalisée : au moins un message OU des fichiers
             $request->validate($rules);
 
             if (empty($request->message) && !$request->hasFile('files')) {
@@ -185,12 +192,12 @@ class CommunauteController extends Controller
                 }
             }
 
-            // ✅ Créer le message avec un texte vide si nécessaire
+            //  Créer le message avec un texte vide si nécessaire
             $message = MessageCommunaute::create([
                 'communaute_id' => $communaute->id,
                 'user_id' => $request->user()->id,
                 'parent_message_id' => $request->parent_message_id,
-                'message' => $request->message ?? '',  // ✅ String vide par défaut
+                'message' => $request->message ?? '',  // String vide par défaut
                 'type' => $request->type,
                 'attachments' => $attachments,
                 'attachments_meta' => $attachmentsMeta,
@@ -202,12 +209,27 @@ class CommunauteController extends Controller
             }
 
             // Charger les relations
-            $message->load('user:id,name,email', 'parent.user:id,name', 'reactions');
+            $message->load([
+            'user:id,name,email',
+            'parent' => function($query) {
+                $query->select('id', 'message', 'user_id', 'type');
+            },
+            'parent.user:id,name',
+            'reactions.user:id,name',
+            'replies.user:id,name'
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => $message,
-            ], 201);
+        \Log::info('Message créé avec relations:', [
+            'message_id' => $message->id,
+            'parent_id' => $message->parent_message_id,
+            'has_parent' => $message->parent ? 'OUI' : 'NON',
+            'parent_data' => $message->parent
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => $message,
+        ], 201);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
             \Log::error('❌ Validation error:', [

@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\InscriptionController;
 use App\Http\Controllers\Api\CommunauteController;
 use App\Http\Controllers\Api\StatistiquesController;
 use App\Http\Controllers\Api\FormateurController;
+use App\Http\Controllers\Api\PaiementController;
 
 /*
 |--------------------------------------------------------------------------
@@ -166,6 +167,20 @@ Route::prefix('formateur')->middleware(['auth:sanctum', 'check.profile'])->group
             Route::post('/{inscription}/bloquer', [InscriptionController::class, 'bloquer']);
             Route::post('/{inscription}/debloquer', [InscriptionController::class, 'debloquer']);
             Route::get('/{inscription}/progression', [InscriptionController::class, 'progression']);
+        });
+
+        // Routes Paiements FedaPay
+        Route::middleware('auth:sanctum')->group(function () {
+            // Paiements
+            Route::prefix('paiements')->group(function () {
+                Route::post('/formations/{formation}/initier', [PaiementController::class, 'initierPaiement']);
+                Route::get('/{paiement}/statut', [PaiementController::class, 'verifierStatut']);
+                Route::get('/mes-paiements', [PaiementController::class, 'mesPaiements']);
+            });
+            
+            // Callbacks FedaPay (publics mais signés)
+            Route::get('/fedapay/callback', [PaiementController::class, 'callback'])->name('fedapay.callback');
+            Route::post('/fedapay/webhook', [PaiementController::class, 'webhook'])->name('fedapay.webhook');
         });
 
         // ==========================================
