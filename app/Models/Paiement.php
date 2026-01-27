@@ -19,6 +19,7 @@ class Paiement extends Model
         'payment_url',
         'metadata',
         'fedapay_response',
+        'date_paiement',
     ];
 
     /**
@@ -26,10 +27,11 @@ class Paiement extends Model
      */
     protected $casts = [
         'montant' => 'decimal:2',
-        'metadata' => 'array',           // ✅ Convertit automatiquement JSON ↔ Array
-        'fedapay_response' => 'array',   // ✅ Convertit automatiquement JSON ↔ Array
+        'metadata' => 'array',           
+        'fedapay_response' => 'array',   
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
+        'date_paiement' => 'datetime',
     ];
 
     /**
