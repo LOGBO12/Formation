@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\CommunauteController;
 use App\Http\Controllers\Api\StatistiquesController;
 use App\Http\Controllers\Api\FormateurController;
 use App\Http\Controllers\Api\PaiementController;
+use App\Http\Controllers\Api\FormateurPaymentController; // ⚠️ AJOUT MANQUANT
 
 /*
 |--------------------------------------------------------------------------
@@ -22,7 +23,14 @@ use App\Http\Controllers\Api\PaiementController;
 |--------------------------------------------------------------------------
 */
 
-// Routes publiques (pas d'authentification requise)
+// ==========================================
+// ROUTES PUBLIQUES (pas d'authentification)
+// ==========================================
+
+// Callbacks FedaPay (DOIVENT ÊTRE AVANT auth:sanctum)
+Route::get('/fedapay/callback', [PaiementController::class, 'callback'])->name('fedapay.callback');
+Route::post('/fedapay/webhook', [PaiementController::class, 'webhook'])->name('fedapay.webhook');
+
 Route::prefix('auth')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/login', [AuthController::class, 'login']);
@@ -36,7 +44,10 @@ Route::get('/domaines', [DomaineController::class, 'index']);
 // Formation publique par lien
 Route::get('/formations/lien/{lienPublic}', [FormationController::class, 'showByLink']);
 
-// Routes protégées (authentification requise)
+// ==========================================
+// ROUTES PROTÉGÉES (authentification requise)
+// ==========================================
+
 Route::middleware('auth:sanctum')->group(function () {
     // Auth
     Route::get('/me', [AuthController::class, 'me']);
@@ -79,12 +90,27 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/chapitres/{chapitre}/terminer', [ApprenantController::class, 'terminerChapitre']);
         });
 
-        // Dans routes/api.php, section formateur
-Route::prefix('formateur')->middleware(['auth:sanctum', 'check.profile'])->group(function () {
-    // ... autres routes formateur ...
-    
-    Route::get('/mes-communautes', [FormateurController::class, 'mesCommunautes']);
-});
+        // ==========================================
+        // ROUTES PAIEMENTS (Apprenant)
+        // ==========================================
+        Route::prefix('paiements')->group(function () {
+            Route::post('/formations/{formation}/initier', [PaiementController::class, 'initierPaiement']);
+            Route::get('/{paiement}/statut', [PaiementController::class, 'verifierStatut']);
+            Route::get('/mes-paiements', [PaiementController::class, 'mesPaiements']);
+        });
+
+        // ==========================================
+        // ROUTES FORMATEUR
+        // ==========================================
+        Route::prefix('formateur')->group(function () {
+            // Communautés
+            Route::get('/mes-communautes', [FormateurController::class, 'mesCommunautes']);
+            
+            // 💰 Paiements et Revenus
+            Route::get('/paiements-recus', [FormateurPaymentController::class, 'paiementsRecus']);
+            Route::get('/payment-settings', [FormateurPaymentController::class, 'getPaymentSettings']);
+            Route::post('/payment-settings/update', [FormateurPaymentController::class, 'updatePaymentSettings']);
+        });
 
         // ==========================================
         // ROUTES SUPER ADMIN
@@ -106,10 +132,8 @@ Route::prefix('formateur')->middleware(['auth:sanctum', 'check.profile'])->group
         });
 
         // ==========================================
-        // ROUTES FORMATEUR
+        // ROUTES FORMATIONS (Formateur)
         // ==========================================
-        
-        // Formations
         Route::prefix('formations')->group(function () {
             Route::get('/', [FormationController::class, 'index']);
             Route::post('/', [FormationController::class, 'store']);
@@ -169,22 +193,8 @@ Route::prefix('formateur')->middleware(['auth:sanctum', 'check.profile'])->group
             Route::get('/{inscription}/progression', [InscriptionController::class, 'progression']);
         });
 
-        // Routes Paiements FedaPay
-        Route::middleware('auth:sanctum')->group(function () {
-            // Paiements
-            Route::prefix('paiements')->group(function () {
-                Route::post('/formations/{formation}/initier', [PaiementController::class, 'initierPaiement']);
-                Route::get('/{paiement}/statut', [PaiementController::class, 'verifierStatut']);
-                Route::get('/mes-paiements', [PaiementController::class, 'mesPaiements']);
-            });
-            
-            // Callbacks FedaPay (publics mais signés)
-            Route::get('/fedapay/callback', [PaiementController::class, 'callback'])->name('fedapay.callback');
-            Route::post('/fedapay/webhook', [PaiementController::class, 'webhook'])->name('fedapay.webhook');
-        });
-
         // ==========================================
-        // ROUTES COMMUNAUTÉS (CORRIGÉES)
+        // ROUTES COMMUNAUTÉS
         // ==========================================
         Route::prefix('communautes')->group(function () {
             // MESSAGES DE BASE

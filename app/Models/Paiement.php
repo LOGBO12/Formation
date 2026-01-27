@@ -12,20 +12,29 @@ class Paiement extends Model
     protected $fillable = [
         'user_id',
         'formation_id',
+        'transaction_id',
         'montant',
         'statut',
-        'fedapay_transaction_id',
         'methode_paiement',
+        'payment_url',
         'metadata',
-        'date_paiement',
+        'fedapay_response',
     ];
 
+    /**
+     * ⚠️ TRÈS IMPORTANT : Caster metadata et fedapay_response en array/json
+     */
     protected $casts = [
         'montant' => 'decimal:2',
-        'date_paiement' => 'datetime',
+        'metadata' => 'array',           // ✅ Convertit automatiquement JSON ↔ Array
+        'fedapay_response' => 'array',   // ✅ Convertit automatiquement JSON ↔ Array
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
-    // Relations
+    /**
+     * Relations
+     */
     public function user()
     {
         return $this->belongsTo(User::class);
@@ -36,8 +45,10 @@ class Paiement extends Model
         return $this->belongsTo(Formation::class);
     }
 
-    // Scopes
-    public function scopeCompletes($query)
+    /**
+     * Scopes
+     */
+    public function scopeComplete($query)
     {
         return $query->where('statut', 'complete');
     }
@@ -47,32 +58,58 @@ class Paiement extends Model
         return $query->where('statut', 'en_attente');
     }
 
-    public function scopeEchoues($query)
+    public function scopeEchec($query)
     {
-        return $query->where('statut', 'echoue');
+        return $query->where('statut', 'echec');
     }
 
-    // Méthodes utilitaires
-    public function estComplete()
+    /**
+     * Accesseurs
+     */
+    public function getMontantFormateAttribute()
+    {
+        return number_format($this->montant, 0, ',', ' ') . ' FCFA';
+    }
+
+    public function getStatutBadgeAttribute()
+    {
+        $badges = [
+            'en_attente' => 'warning',
+            'complete' => 'success',
+            'echec' => 'danger',
+            'annule' => 'secondary',
+        ];
+
+        return $badges[$this->statut] ?? 'secondary';
+    }
+
+    public function getStatutLabelAttribute()
+    {
+        $labels = [
+            'en_attente' => 'En attente',
+            'complete' => 'Complété',
+            'echec' => 'Échoué',
+            'annule' => 'Annulé',
+        ];
+
+        return $labels[$this->statut] ?? $this->statut;
+    }
+
+    /**
+     * Méthodes helper
+     */
+    public function isComplete()
     {
         return $this->statut === 'complete';
     }
 
-    public function estEnAttente()
+    public function isEnAttente()
     {
         return $this->statut === 'en_attente';
     }
 
-    public function marquerComplete()
+    public function isEchec()
     {
-        $this->update([
-            'statut' => 'complete',
-            'date_paiement' => now(),
-        ]);
-    }
-
-    public function marquerEchoue()
-    {
-        $this->update(['statut' => 'echoue']);
+        return $this->statut === 'echec';
     }
 }
