@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Carbon\Carbon;
 
 class Notification extends Model
 {
@@ -28,7 +29,9 @@ class Notification extends Model
         'updated_at' => 'datetime',
     ];
 
-    protected $appends = ['temps_ecoule'];
+    // ✅ CORRECTION: Retirer 'temps_ecoule' de $appends pour éviter l'erreur
+    // On le calculera manuellement côté contrôleur
+    // protected $appends = ['temps_ecoule'];
 
     /**
      * Relation avec l'utilisateur
@@ -74,11 +77,26 @@ class Notification extends Model
     }
 
     /**
-     * Temps écoulé depuis la création
+     * ✅ CORRECTION: Getter sécurisé pour temps_ecoule
+     * Utilise try-catch pour éviter les erreurs
      */
     public function getTempsEcouleAttribute()
     {
-        return $this->created_at->diffForHumans();
+        try {
+            if ($this->created_at instanceof Carbon) {
+                return $this->created_at->locale('fr')->diffForHumans();
+            }
+            
+            // Si ce n'est pas une instance Carbon, essayer de la créer
+            if ($this->created_at) {
+                return Carbon::parse($this->created_at)->locale('fr')->diffForHumans();
+            }
+            
+            return 'À l\'instant';
+        } catch (\Exception $e) {
+            \Log::error('Erreur getTempsEcouleAttribute: ' . $e->getMessage());
+            return 'À l\'instant';
+        }
     }
 
     /**
@@ -117,5 +135,16 @@ class Notification extends Model
         ];
 
         return $colors[$this->type] ?? 'secondary';
+    }
+
+    /**
+     * ✅ NOUVEAU: Méthode pour formater la notification en JSON
+     * Calcule temps_ecoule manuellement
+     */
+    public function toArrayWithTime()
+    {
+        $array = $this->toArray();
+        $array['temps_ecoule'] = $this->getTempsEcouleAttribute();
+        return $array;
     }
 }

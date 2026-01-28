@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Notification;
 use App\Services\NotificationService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class NotificationController extends Controller
 {
@@ -17,7 +18,7 @@ class NotificationController extends Controller
     }
 
     /**
-     * Liste des notifications de l'utilisateur
+     * Liste des notifications de l'utilisateur (avec pagination)
      */
     public function index(Request $request)
     {
@@ -26,26 +27,92 @@ class NotificationController extends Controller
                 ->orderBy('created_at', 'desc')
                 ->paginate(20);
 
+            // ✅ CORRECTION: Ajouter temps_ecoule manuellement à chaque notification
+            $notifications->getCollection()->transform(function ($notification) {
+                $notification->temps_ecoule = $notification->getTempsEcouleAttribute();
+                return $notification;
+            });
+
             return response()->json([
                 'success' => true,
                 'notifications' => $notifications,
             ], 200);
 
         } catch (\Exception $e) {
+            Log::error('❌ Erreur index notifications:', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la récupération des notifications',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
 
     /**
-     * Compter les notifications non lues
+     * ✅ CORRECTION: Récupérer les notifications récentes (5 dernières)
+     * Gestion robuste des erreurs
+     */
+    public function recentes(Request $request)
+    {
+        try {
+            Log::info('📥 Récupération notifications récentes', [
+                'user_id' => $request->user()->id,
+            ]);
+
+            $notifications = Notification::where('user_id', $request->user()->id)
+                ->orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get();
+
+            // ✅ Ajouter temps_ecoule à chaque notification
+            $notifications->transform(function ($notification) {
+                $notification->temps_ecoule = $notification->getTempsEcouleAttribute();
+                return $notification;
+            });
+
+            Log::info('✅ Notifications récupérées', [
+                'count' => $notifications->count(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'notifications' => $notifications,
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur recentes notifications:', [
+                'message' => $e->getMessage(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * ✅ CORRECTION: Compter les notifications non lues
      */
     public function compterNonLues(Request $request)
     {
         try {
-            $count = $this->notificationService->compterNonLues($request->user()->id);
+            Log::info('🔢 Comptage notifications non lues', [
+                'user_id' => $request->user()->id,
+            ]);
+
+            $count = Notification::where('user_id', $request->user()->id)
+                ->where('lu', false)
+                ->count();
+
+            Log::info('✅ Comptage réussi', ['count' => $count]);
 
             return response()->json([
                 'success' => true,
@@ -53,9 +120,15 @@ class NotificationController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
+            Log::error('❌ Erreur compterNonLues:', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors du comptage',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
@@ -75,6 +148,7 @@ class NotificationController extends Controller
             }
 
             $notification->marquerCommeLu();
+            $notification->temps_ecoule = $notification->getTempsEcouleAttribute();
 
             return response()->json([
                 'success' => true,
@@ -83,9 +157,14 @@ class NotificationController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
+            Log::error('❌ Erreur marquerCommeLue:', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la mise à jour',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
@@ -96,18 +175,28 @@ class NotificationController extends Controller
     public function marquerToutCommeLu(Request $request)
     {
         try {
-            $count = $this->notificationService->marquerToutCommeLu($request->user()->id);
+            $count = Notification::where('user_id', $request->user()->id)
+                ->where('lu', false)
+                ->update([
+                    'lu' => true,
+                    'lu_at' => now(),
+                ]);
 
             return response()->json([
                 'success' => true,
-                'message' => "{$count} notifications marquées comme lues",
+                'message' => "{$count} notification(s) marquée(s) comme lue(s)",
                 'count' => $count,
             ], 200);
 
         } catch (\Exception $e) {
+            Log::error('❌ Erreur marquerToutCommeLu:', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la mise à jour',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
@@ -134,9 +223,14 @@ class NotificationController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
+            Log::error('❌ Erreur supprimer:', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la suppression',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
@@ -153,38 +247,19 @@ class NotificationController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => "{$count} notifications supprimées",
+                'message' => "{$count} notification(s) supprimée(s)",
                 'count' => $count,
             ], 200);
 
         } catch (\Exception $e) {
+            Log::error('❌ Erreur supprimerLues:', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Erreur lors de la suppression',
-            ], 500);
-        }
-    }
-
-    /**
-     * Récupérer les notifications récentes (5 dernières)
-     */
-    public function recentes(Request $request)
-    {
-        try {
-            $notifications = Notification::where('user_id', $request->user()->id)
-                ->orderBy('created_at', 'desc')
-                ->limit(5)
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'notifications' => $notifications,
-            ], 200);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors de la récupération',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }

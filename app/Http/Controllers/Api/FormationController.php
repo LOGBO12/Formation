@@ -9,10 +9,10 @@ use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 
 class FormationController extends Controller
 {
-
     protected $notificationService;
 
     public function __construct(NotificationService $notificationService)
@@ -41,54 +41,60 @@ class FormationController extends Controller
      * Créer une nouvelle formation
      */
     public function store(Request $request)
-{
-    $request->validate([
-        'titre' => 'required|string|max:255',
-        'description' => 'required|string',
-        'domaine_id' => 'required|exists:domaines,id',
-        'prix' => 'nullable|numeric|min:0',
-        'is_free' => 'boolean',
-        'duree_estimee' => 'nullable|integer|min:1',
-        'image' => 'nullable|image|max:2048',
-    ]);
+    {
+        $request->validate([
+            'titre' => 'required|string|max:255',
+            'description' => 'required|string',
+            'domaine_id' => 'required|exists:domaines,id',
+            'prix' => 'nullable|numeric|min:0',
+            'is_free' => 'boolean',
+            'duree_estimee' => 'nullable|integer|min:1',
+            'image' => 'nullable|image|max:2048',
+        ]);
 
-    $data = $request->all();
-    $data['formateur_id'] = $request->user()->id;
-    $data['statut'] = 'brouillon';
-    
-    // Générer un slug unique
-    $baseSlug = Str::slug($request->titre);
-    $slug = $baseSlug;
-    $count = 1;
-    
-    while (Formation::where('slug', $slug)->exists()) {
-        $slug = $baseSlug . '-' . $count;
-        $count++;
+        $data = $request->all();
+        $data['formateur_id'] = $request->user()->id;
+        $data['statut'] = 'brouillon'; // ✅ Toujours en brouillon à la création
+        
+        // Générer un slug unique
+        $baseSlug = Str::slug($request->titre);
+        $slug = $baseSlug;
+        $count = 1;
+        
+        while (Formation::where('slug', $slug)->exists()) {
+            $slug = $baseSlug . '-' . $count;
+            $count++;
+        }
+        
+        $data['slug'] = $slug;
+        $data['lien_public'] = Str::random(10);
+
+        // Upload de l'image
+        if ($request->hasFile('image')) {
+            $data['image'] = $request->file('image')->store('formations', 'public');
+        }
+
+        // Gérer is_free
+        if (isset($data['is_free'])) {
+            $data['is_free'] = filter_var($data['is_free'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        $formation = Formation::create($data);
+
+        Log::info('✅ Formation créée en brouillon', [
+            'formation_id' => $formation->id,
+            'titre' => $formation->titre,
+            'statut' => $formation->statut,
+        ]);
+
+        // ❌ PAS de notification ici car en brouillon
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Formation créée avec succès',
+            'formation' => $formation->load('domaine'),
+        ], 201);
     }
-    
-    $data['slug'] = $slug;
-    $data['lien_public'] = Str::random(10);
-
-    // Upload de l'image
-    if ($request->hasFile('image')) {
-        $data['image'] = $request->file('image')->store('formations', 'public');
-    }
-
-    // Gérer is_free
-    if (isset($data['is_free'])) {
-        $data['is_free'] = filter_var($data['is_free'], FILTER_VALIDATE_BOOLEAN);
-    }
-
-    $formation = Formation::create($data);
-
-    $this->notificationService->notifierNouvelleFormation($formation);
-
-    return response()->json([
-        'success' => true,
-        'message' => 'Formation créée avec succès',
-        'formation' => $formation->load('domaine'),
-    ], 201);
-}
 
     /**
      * Afficher une formation
@@ -184,7 +190,8 @@ class FormationController extends Controller
     }
 
     /**
-     * Changer le statut d'une formation
+     * ✅ CORRECTION: Changer le statut d'une formation
+     * Envoie les notifications UNIQUEMENT lors de la publication
      */
     public function changeStatut(Request $request, Formation $formation)
     {
@@ -199,7 +206,31 @@ class FormationController extends Controller
             'statut' => 'required|in:brouillon,publie,archive',
         ]);
 
-        $formation->update(['statut' => $request->statut]);
+        $ancienStatut = $formation->statut;
+        $nouveauStatut = $request->statut;
+
+        $formation->update(['statut' => $nouveauStatut]);
+
+        Log::info('📝 Changement de statut formation', [
+            'formation_id' => $formation->id,
+            'ancien_statut' => $ancienStatut,
+            'nouveau_statut' => $nouveauStatut,
+        ]);
+
+        // ✅ Envoyer les notifications UNIQUEMENT si passage de brouillon/archive à publié
+        if ($nouveauStatut === 'publie' && in_array($ancienStatut, ['brouillon', 'archive'])) {
+            Log::info('🔔 Envoi des notifications - Formation publiée', [
+                'formation_id' => $formation->id,
+            ]);
+
+            $this->notificationService->notifierNouvelleFormation($formation);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Formation publiée avec succès ! Les apprenants ont été notifiés.',
+                'formation' => $formation,
+            ]);
+        }
 
         return response()->json([
             'success' => true,
@@ -254,14 +285,34 @@ class FormationController extends Controller
     }
 
     /**
-     * Publier une formation
+     * ✅ MÉTHODE OBSOLÈTE - Utiliser changeStatut à la place
+     * Publie une formation (pour compatibilité)
      */
     public function publier(Formation $formation)
     {
-        $formation->update(['statut' => 'publiee']);
+        if ($formation->formateur_id !== auth()->user()->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Non autorisé',
+            ], 403);
+        }
 
-        // 🆕 Notifier tous les apprenants
-        $this->notificationService->notifierNouvelleFormation($formation);
+        $ancienStatut = $formation->statut;
+        $formation->update(['statut' => 'publie']);
+
+        // ✅ Notifier UNIQUEMENT si c'était en brouillon avant
+        if (in_array($ancienStatut, ['brouillon', 'archive'])) {
+            $this->notificationService->notifierNouvelleFormation($formation);
+            
+            Log::info('🔔 Formation publiée et notifications envoyées', [
+                'formation_id' => $formation->id,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Formation publiée avec succès ! Les apprenants ont été notifiés.',
+            ], 200);
+        }
 
         return response()->json([
             'success' => true,

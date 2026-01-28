@@ -5,19 +5,28 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Communaute;
 use App\Models\MessageCommunaute;
+use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 
 class CommunauteController extends Controller
 {
+    protected $notificationService;
+
+    public function __construct(NotificationService $notificationService)
+    {
+        $this->notificationService = $notificationService;
+    }
+
     /**
      * Afficher une communauté avec toutes les infos
      */
     public function show(Request $request, Communaute $communaute)
     {
         try {
-            \Log::info(' Show communauté', ['id' => $communaute->id, 'user' => $request->user()->id]);
+            Log::info('📖 Show communauté', ['id' => $communaute->id, 'user' => $request->user()->id]);
 
             $membre = DB::table('communaute_membres')
                 ->where('communaute_id', $communaute->id)
@@ -63,7 +72,7 @@ class CommunauteController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            \Log::error('❌ Erreur show communauté:', [
+            Log::error('❌ Erreur show communauté:', [
                 'message' => $e->getMessage(),
                 'line' => $e->getLine(),
             ]);
@@ -77,64 +86,58 @@ class CommunauteController extends Controller
     }
 
     /**
- * Messages d'une communauté (avec pagination)
- */
-public function messages(Request $request, Communaute $communaute)
-{
-    try {
-        $estMembre = DB::table('communaute_membres')
-            ->where('communaute_id', $communaute->id)
-            ->where('user_id', $request->user()->id)
-            ->exists();
+     * Messages d'une communauté (avec pagination)
+     */
+    public function messages(Request $request, Communaute $communaute)
+    {
+        try {
+            $estMembre = DB::table('communaute_membres')
+                ->where('communaute_id', $communaute->id)
+                ->where('user_id', $request->user()->id)
+                ->exists();
 
-        if (!$estMembre) {
+            if (!$estMembre) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Vous n\'êtes pas membre de cette communauté',
+                ], 403);
+            }
+
+            $messages = MessageCommunaute::where('communaute_id', $communaute->id)
+                ->with([
+                    'user:id,name,email',
+                    'parent' => function($query) {
+                        $query->select('id', 'message', 'user_id', 'type', 'attachments');
+                    },
+                    'parent.user:id,name',
+                    'reactions.user:id,name',
+                ])
+                ->whereNull('deleted_at')
+                ->orderBy('is_pinned', 'desc')
+                ->orderBy('is_announcement', 'desc')
+                ->orderBy('created_at', 'asc')
+                ->paginate(100);
+
+            return response()->json([
+                'success' => true,
+                'messages' => $messages,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur messages:', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => 'Vous n\'êtes pas membre de cette communauté',
-            ], 403);
+                'message' => 'Erreur lors du chargement des messages',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
         }
-
-        // CORRECTION : Charger TOUS les messages (avec et sans parent)
-        $messages = MessageCommunaute::where('communaute_id', $communaute->id)
-            ->with([
-                'user:id,name,email',
-                'parent' => function($query) {
-                    $query->select('id', 'message', 'user_id', 'type', 'attachments');
-                },
-                'parent.user:id,name',
-                'reactions.user:id,name',
-            ])
-            ->whereNull('deleted_at')
-            ->orderBy('is_pinned', 'desc')
-            ->orderBy('is_announcement', 'desc')
-            ->orderBy('created_at', 'asc')
-            ->paginate(100);
-
-        \Log::info(' Messages chargés:', [
-            'total' => $messages->total(),
-            'avec_parent' => $messages->filter(fn($m) => $m->parent_message_id !== null)->count(),
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'messages' => $messages,
-        ]);
-
-    } catch (\Exception $e) {
-        \Log::error('❌ Erreur messages:', [
-            'message' => $e->getMessage(),
-        ]);
-
-        return response()->json([
-            'success' => false,
-            'message' => 'Erreur lors du chargement des messages',
-            'error' => config('app.debug') ? $e->getMessage() : null
-        ], 500);
     }
-}
 
     /**
-     * Envoyer un message (texte, audio, fichier, vidéo, image)
+     * ✅ CORRECTION: Envoyer un message avec notifications
      */
     public function envoyerMessage(Request $request, Communaute $communaute)
     {
@@ -158,15 +161,13 @@ public function messages(Request $request, Communaute $communaute)
                 ], 403);
             }
 
-            //  VALIDATION CORRIGÉE - Le message peut être vide si des fichiers sont présents
             $rules = [
-                'message' => 'nullable|string|max:5000',  //  nullable au lieu de required_without
+                'message' => 'nullable|string|max:5000',
                 'type' => 'required|in:text,image,video,audio,pdf,file',
                 'parent_message_id' => 'nullable|exists:messages_communaute,id',
-                'files.*' => 'nullable|file|max:20480', // 20MB max
+                'files.*' => 'nullable|file|max:20480',
             ];
 
-            //  Validation personnalisée : au moins un message OU des fichiers
             $request->validate($rules);
 
             if (empty($request->message) && !$request->hasFile('files')) {
@@ -192,12 +193,11 @@ public function messages(Request $request, Communaute $communaute)
                 }
             }
 
-            //  Créer le message avec un texte vide si nécessaire
             $message = MessageCommunaute::create([
                 'communaute_id' => $communaute->id,
                 'user_id' => $request->user()->id,
                 'parent_message_id' => $request->parent_message_id,
-                'message' => $request->message ?? '',  // String vide par défaut
+                'message' => $request->message ?? '',
                 'type' => $request->type,
                 'attachments' => $attachments,
                 'attachments_meta' => $attachmentsMeta,
@@ -210,29 +210,44 @@ public function messages(Request $request, Communaute $communaute)
 
             // Charger les relations
             $message->load([
-            'user:id,name,email',
-            'parent' => function($query) {
-                $query->select('id', 'message', 'user_id', 'type');
-            },
-            'parent.user:id,name',
-            'reactions.user:id,name',
-            'replies.user:id,name'
-        ]);
+                'user:id,name,email',
+                'parent' => function($query) {
+                    $query->select('id', 'message', 'user_id', 'type');
+                },
+                'parent.user:id,name',
+                'reactions.user:id,name',
+                'replies.user:id,name'
+            ]);
 
-        \Log::info('Message créé avec relations:', [
-            'message_id' => $message->id,
-            'parent_id' => $message->parent_message_id,
-            'has_parent' => $message->parent ? 'OUI' : 'NON',
-            'parent_data' => $message->parent
-        ]);
+            Log::info('✅ Message créé', [
+                'message_id' => $message->id,
+                'communaute_id' => $communaute->id,
+                'user_id' => $request->user()->id,
+            ]);
 
-        return response()->json([
-            'success' => true,
-            'message' => $message,
-        ], 201);
+            // ✅ CORRECTION: Envoyer les notifications aux membres
+            try {
+                $this->notificationService->notifierNouveauMessage($message, $communaute);
+                
+                Log::info('🔔 Notifications de message envoyées', [
+                    'message_id' => $message->id,
+                    'communaute_id' => $communaute->id,
+                ]);
+            } catch (\Exception $e) {
+                Log::error('⚠️ Erreur envoi notifications message (message créé quand même):', [
+                    'message_id' => $message->id,
+                    'error' => $e->getMessage(),
+                ]);
+                // On continue même si les notifications échouent
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+            ], 201);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
-            \Log::error('❌ Validation error:', [
+            Log::error('❌ Validation error:', [
                 'errors' => $e->errors(),
             ]);
 
@@ -243,7 +258,7 @@ public function messages(Request $request, Communaute $communaute)
             ], 422);
 
         } catch (\Exception $e) {
-            \Log::error('❌ Erreur envoi message:', [
+            Log::error('❌ Erreur envoi message:', [
                 'message' => $e->getMessage(),
                 'line' => $e->getLine(),
                 'file' => $e->getFile(),
@@ -263,7 +278,6 @@ public function messages(Request $request, Communaute $communaute)
     public function updateMessage(Request $request, MessageCommunaute $message)
     {
         try {
-            // Seul l'auteur peut modifier son message
             if ($message->user_id !== $request->user()->id) {
                 return response()->json([
                     'success' => false,
@@ -271,7 +285,6 @@ public function messages(Request $request, Communaute $communaute)
                 ], 403);
             }
 
-            // On ne peut modifier que le texte
             $request->validate([
                 'message' => 'required|string|max:5000',
             ]);
@@ -320,7 +333,6 @@ public function messages(Request $request, Communaute $communaute)
                 ], 403);
             }
 
-            // Supprimer les fichiers attachés
             if ($message->attachments) {
                 foreach ($message->attachments as $path) {
                     Storage::disk('public')->delete($path);
@@ -343,7 +355,7 @@ public function messages(Request $request, Communaute $communaute)
     }
 
     /**
-     * Épingler/Désépingler un message
+     * Épingler un message
      */
     public function epinglerMessage(Request $request, MessageCommunaute $message)
     {
@@ -415,7 +427,7 @@ public function messages(Request $request, Communaute $communaute)
     }
 
     /**
-     * Ajouter/Retirer une réaction (emoji)
+     * Toggle réaction
      */
     public function toggleReaction(Request $request, MessageCommunaute $message)
     {
@@ -427,18 +439,15 @@ public function messages(Request $request, Communaute $communaute)
             $userId = $request->user()->id;
             $reaction = $request->reaction;
 
-            // Vérifier si la réaction existe déjà
             $existing = $message->reactions()
                 ->where('user_id', $userId)
                 ->where('reaction', $reaction)
                 ->first();
 
             if ($existing) {
-                // Retirer la réaction
                 $existing->delete();
                 $action = 'removed';
             } else {
-                // Ajouter la réaction
                 $message->reactions()->create([
                     'user_id' => $userId,
                     'reaction' => $reaction,
@@ -446,7 +455,6 @@ public function messages(Request $request, Communaute $communaute)
                 $action = 'added';
             }
 
-            // Retourner les réactions groupées
             $groupedReactions = $message->getGroupedReactions();
 
             return response()->json([
@@ -779,7 +787,7 @@ public function messages(Request $request, Communaute $communaute)
     }
 
     /**
-     * Envoyer une annonce
+     * ✅ CORRECTION: Envoyer une annonce avec notifications potentiellement
      */
     public function envoyerAnnonce(Request $request, Communaute $communaute)
     {
@@ -810,6 +818,9 @@ public function messages(Request $request, Communaute $communaute)
             ]);
 
             $message->load('user:id,name,email');
+
+            // Optionnel : Notifier tous les membres pour les annonces importantes
+            // $this->notificationService->notifierNouveauMessage($message, $communaute);
 
             return response()->json([
                 'success' => true,

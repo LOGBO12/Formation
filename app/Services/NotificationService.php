@@ -29,68 +29,116 @@ class NotificationService
     }
 
     /**
-     * Notifier une nouvelle formation à tous les apprenants
+     * ✅ Notifier une nouvelle formation - Seulement si PUBLIÉE
      */
     public function notifierNouvelleFormation($formation)
     {
         try {
+            // ✅ Vérifier que la formation est bien publiée
+            if ($formation->statut !== 'publie') {
+                Log::warning('⚠️ Tentative de notification pour formation non publiée', [
+                    'formation_id' => $formation->id,
+                    'statut' => $formation->statut,
+                ]);
+                return;
+            }
+
             $apprenants = User::where('role', 'apprenant')->get();
             
             foreach ($apprenants as $apprenant) {
                 $this->creer(
                     $apprenant->id,
                     'nouvelle_formation',
-                    'Nouvelle formation disponible',
-                    "La formation \"{$formation->titre}\" vient d'être publiée dans le domaine {$formation->domaine->nom}",
-                    "/apprenant/formations/{$formation->id}",
+                    'Nouvelle formation disponible ! 🎓',
+                    "La formation \"{$formation->titre}\" vient d'être publiée dans le domaine {$formation->domaine->name}. Consultez le catalogue pour en savoir plus.",
+                    "/apprenant/catalogue",
                     [
                         'formation_id' => $formation->id,
                         'formation_titre' => $formation->titre,
+                        'formation_lien_public' => $formation->lien_public,
+                        'domaine_id' => $formation->domaine_id,
+                        'domaine_nom' => $formation->domaine->name,
                         'formateur_id' => $formation->formateur_id,
                         'formateur_nom' => $formation->formateur->name,
+                        'prix' => $formation->prix,
+                        'is_free' => $formation->is_free,
                     ]
                 );
             }
 
-            Log::info("🔔 Notifications envoyées pour la formation #{$formation->id} à {$apprenants->count()} apprenants");
+            Log::info("🔔 Notifications 'nouvelle formation' envoyées", [
+                'formation_id' => $formation->id,
+                'formation_titre' => $formation->titre,
+                'statut' => $formation->statut,
+                'nombre_apprenants' => $apprenants->count(),
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Erreur notifierNouvelleFormation: ' . $e->getMessage());
+            Log::error('❌ Erreur notifierNouvelleFormation: ' . $e->getMessage(), [
+                'formation_id' => $formation->id ?? null,
+                'trace' => $e->getTraceAsString(),
+            ]);
         }
     }
 
     /**
-     * Notifier un nouveau message dans une communauté
+     * ✅ CORRECTION: Notifier un nouveau message dans une communauté
+     * Utilise le bon champ 'message' au lieu de 'contenu'
      */
-    public function notifierNouveauMessage($message, $communaute)
+    public function notifierNouveauMessage($messageCommunaute, $communaute)
     {
         try {
+            Log::info('🔔 Préparation notifications nouveau message', [
+                'message_id' => $messageCommunaute->id,
+                'communaute_id' => $communaute->id,
+                'auteur_id' => $messageCommunaute->user_id,
+            ]);
+
             // Récupérer tous les membres sauf l'auteur
             $membres = $communaute->membres()
-                ->where('user_id', '!=', $message->user_id)
+                ->where('user_id', '!=', $messageCommunaute->user_id)
                 ->get();
+
+            if ($membres->isEmpty()) {
+                Log::info('ℹ️ Aucun membre à notifier', [
+                    'communaute_id' => $communaute->id,
+                ]);
+                return;
+            }
+
+            // ✅ CORRECTION: Utiliser 'message' au lieu de 'contenu'
+            $contenuMessage = $messageCommunaute->message ?? '';
+            $apercu = \Illuminate\Support\Str::limit($contenuMessage, 100);
             
             foreach ($membres as $membre) {
                 $this->creer(
                     $membre->id,
                     'nouveau_message',
                     "Nouveau message dans {$communaute->nom}",
-                    "{$message->user->name} a posté un message : " . \Illuminate\Support\Str::limit($message->contenu, 100),
-                    "/apprenant/communautes/{$communaute->id}",
+                    "{$messageCommunaute->user->name} a posté un message" . ($apercu ? " : {$apercu}" : ""),
+                    "/communaute/{$communaute->id}",
                     [
-                        'message_id' => $message->id,
+                        'message_id' => $messageCommunaute->id,
                         'communaute_id' => $communaute->id,
                         'communaute_nom' => $communaute->nom,
-                        'auteur_id' => $message->user_id,
-                        'auteur_nom' => $message->user->name,
+                        'auteur_id' => $messageCommunaute->user_id,
+                        'auteur_nom' => $messageCommunaute->user->name,
                     ]
                 );
             }
 
-            Log::info("🔔 Notifications envoyées pour le message #{$message->id} à {$membres->count()} membres");
+            Log::info("✅ Notifications 'nouveau message' envoyées", [
+                'message_id' => $messageCommunaute->id,
+                'communaute_id' => $communaute->id,
+                'nombre_membres_notifies' => $membres->count(),
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Erreur notifierNouveauMessage: ' . $e->getMessage());
+            Log::error('❌ Erreur notifierNouveauMessage: ' . $e->getMessage(), [
+                'message_id' => $messageCommunaute->id ?? null,
+                'communaute_id' => $communaute->id ?? null,
+                'trace' => $e->getTraceAsString(),
+            ]);
         }
     }
 
@@ -103,24 +151,35 @@ class NotificationService
             $formation = $paiement->formation;
             $formateur = $formation->formateur;
 
+            $commission = ($formation->commission_admin / 100) * $paiement->montant;
+            $montantNet = $paiement->montant - $commission;
+
             $this->creer(
                 $formateur->id,
                 'paiement_recu',
-                'Nouveau paiement reçu',
-                "{$paiement->user->name} s'est inscrit à votre formation \"{$formation->titre}\" pour {$paiement->montant} FCFA",
-                "/formateur/formations/{$formation->id}",
+                'Nouveau paiement reçu ! 💰',
+                "{$paiement->user->name} s'est inscrit à votre formation \"{$formation->titre}\" pour {$paiement->montant} FCFA. Vous recevrez {$montantNet} FCFA (après commission de {$commission} FCFA).",
+                "/formateur/revenus",
                 [
                     'paiement_id' => $paiement->id,
                     'formation_id' => $formation->id,
+                    'formation_titre' => $formation->titre,
                     'apprenant_id' => $paiement->user_id,
-                    'montant' => $paiement->montant,
+                    'apprenant_nom' => $paiement->user->name,
+                    'montant_brut' => $paiement->montant,
+                    'commission' => $commission,
+                    'montant_net' => $montantNet,
                 ]
             );
 
-            Log::info("🔔 Notification paiement envoyée au formateur #{$formateur->id}");
+            Log::info("🔔 Notification 'paiement reçu' envoyée", [
+                'formateur_id' => $formateur->id,
+                'paiement_id' => $paiement->id,
+                'montant' => $paiement->montant,
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Erreur notifierPaiementRecu: ' . $e->getMessage());
+            Log::error('❌ Erreur notifierPaiementRecu: ' . $e->getMessage());
         }
     }
 
@@ -133,8 +192,8 @@ class NotificationService
             $this->creer(
                 $inscription->user_id,
                 'inscription_validee',
-                'Inscription validée',
-                "Votre inscription à la formation \"{$inscription->formation->titre}\" a été validée. Vous pouvez maintenant accéder au contenu.",
+                'Inscription validée ! ✅',
+                "Votre inscription à la formation \"{$inscription->formation->titre}\" a été validée. Vous pouvez maintenant accéder au contenu complet.",
                 "/apprenant/formations/{$inscription->formation_id}",
                 [
                     'inscription_id' => $inscription->id,
@@ -143,46 +202,55 @@ class NotificationService
                 ]
             );
 
-            Log::info("🔔 Notification inscription validée envoyée à l'apprenant #{$inscription->user_id}");
+            Log::info("🔔 Notification 'inscription validée' envoyée", [
+                'apprenant_id' => $inscription->user_id,
+                'formation_id' => $inscription->formation_id,
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Erreur notifierInscriptionValidee: ' . $e->getMessage());
+            Log::error('❌ Erreur notifierInscriptionValidee: ' . $e->getMessage());
         }
     }
 
     /**
-     * Notifier un nouveau cours ajouté à une formation
+     * Notifier un nouveau cours/chapitre ajouté à une formation
      */
-    public function notifierNouveauCours($cours)
+    public function notifierNouveauCours($chapitre)
     {
         try {
-            $formation = $cours->formation;
+            $module = $chapitre->module;
+            $formation = $module->formation;
             
-            // Notifier tous les apprenants inscrits
             $inscrits = $formation->inscriptions()
-                ->where('statut', 'active')
+                ->whereIn('statut', ['active', 'approuvee', 'en_cours'])
                 ->get();
             
             foreach ($inscrits as $inscription) {
                 $this->creer(
                     $inscription->user_id,
                     'nouveau_cours',
-                    "Nouveau cours ajouté",
-                    "Un nouveau cours \"{$cours->titre}\" a été ajouté à la formation \"{$formation->titre}\"",
-                    "/apprenant/formations/{$formation->id}/cours/{$cours->id}",
+                    "Nouveau contenu disponible ! 📖",
+                    "Un nouveau chapitre \"{$chapitre->titre}\" a été ajouté au module \"{$module->titre}\" dans la formation \"{$formation->titre}\"",
+                    "/apprenant/formations/{$formation->id}",
                     [
-                        'cours_id' => $cours->id,
-                        'cours_titre' => $cours->titre,
+                        'chapitre_id' => $chapitre->id,
+                        'chapitre_titre' => $chapitre->titre,
+                        'module_id' => $module->id,
+                        'module_titre' => $module->titre,
                         'formation_id' => $formation->id,
                         'formation_titre' => $formation->titre,
                     ]
                 );
             }
 
-            Log::info("🔔 Notifications nouveau cours envoyées à {$inscrits->count()} apprenants");
+            Log::info("🔔 Notifications 'nouveau cours' envoyées", [
+                'chapitre_id' => $chapitre->id,
+                'formation_id' => $formation->id,
+                'nombre_inscrits' => $inscrits->count(),
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Erreur notifierNouveauCours: ' . $e->getMessage());
+            Log::error('❌ Erreur notifierNouveauCours: ' . $e->getMessage());
         }
     }
 
@@ -195,8 +263,8 @@ class NotificationService
             $this->creer(
                 $certificat->user_id,
                 'certificat_obtenu',
-                '🎉 Certificat obtenu !',
-                "Félicitations ! Vous avez obtenu le certificat pour la formation \"{$certificat->formation->titre}\"",
+                '🎉 Félicitations ! Certificat obtenu',
+                "Vous avez terminé avec succès la formation \"{$certificat->formation->titre}\" et obtenu votre certificat. Téléchargez-le dès maintenant !",
                 "/apprenant/certificats/{$certificat->id}",
                 [
                     'certificat_id' => $certificat->id,
@@ -205,10 +273,82 @@ class NotificationService
                 ]
             );
 
-            Log::info("🔔 Notification certificat envoyée à l'apprenant #{$certificat->user_id}");
+            Log::info("🔔 Notification 'certificat obtenu' envoyée", [
+                'apprenant_id' => $certificat->user_id,
+                'certificat_id' => $certificat->id,
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Erreur notifierCertificatObtenu: ' . $e->getMessage());
+            Log::error('❌ Erreur notifierCertificatObtenu: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Notifier un nouveau membre dans une communauté
+     */
+    public function notifierNouveauMembreCommunaute($communaute, $nouveauMembre)
+    {
+        try {
+            $membresExistants = $communaute->membres()
+                ->where('user_id', '!=', $nouveauMembre->id)
+                ->get();
+            
+            foreach ($membresExistants as $membre) {
+                $this->creer(
+                    $membre->id,
+                    'nouveau_membre',
+                    "Nouveau membre dans {$communaute->nom}",
+                    "{$nouveauMembre->name} vient de rejoindre la communauté !",
+                    "/communaute/{$communaute->id}",
+                    [
+                        'communaute_id' => $communaute->id,
+                        'nouveau_membre_id' => $nouveauMembre->id,
+                        'nouveau_membre_nom' => $nouveauMembre->name,
+                    ]
+                );
+            }
+
+            Log::info("🔔 Notifications 'nouveau membre' envoyées", [
+                'communaute_id' => $communaute->id,
+                'nouveau_membre_id' => $nouveauMembre->id,
+                'nombre_notifies' => $membresExistants->count(),
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur notifierNouveauMembreCommunaute: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Notifier une réponse à un commentaire
+     */
+    public function notifierReponseCommentaire($reponse, $commentaireParent)
+    {
+        try {
+            if ($reponse->user_id !== $commentaireParent->user_id) {
+                $this->creer(
+                    $commentaireParent->user_id,
+                    'reponse_commentaire',
+                    "Réponse à votre message",
+                    "{$reponse->user->name} a répondu à votre message : " . \Illuminate\Support\Str::limit($reponse->message, 100),
+                    "/communaute/{$reponse->communaute_id}",
+                    [
+                        'reponse_id' => $reponse->id,
+                        'commentaire_parent_id' => $commentaireParent->id,
+                        'communaute_id' => $reponse->communaute_id,
+                        'auteur_id' => $reponse->user_id,
+                        'auteur_nom' => $reponse->user->name,
+                    ]
+                );
+
+                Log::info("🔔 Notification 'réponse commentaire' envoyée", [
+                    'destinataire_id' => $commentaireParent->user_id,
+                    'reponse_id' => $reponse->id,
+                ]);
+            }
+            
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur notifierReponseCommentaire: ' . $e->getMessage());
         }
     }
 
