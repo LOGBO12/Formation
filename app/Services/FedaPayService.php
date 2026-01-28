@@ -18,19 +18,20 @@ class FedaPayService
         // Configuration FedaPay
         FedaPay::setApiKey(config('fedapay.api_key'));
         FedaPay::setEnvironment(config('fedapay.environment')); // 'sandbox' ou 'live'
+        
+        Log::info('🔧 FedaPay Service initialisé', [
+            'environment' => config('fedapay.environment'),
+            'has_api_key' => !empty(config('fedapay.api_key')),
+        ]);
     }
 
     /**
      * Créer une transaction FedaPay
-     * 
-     * @param Paiement $paiement - Le paiement à traiter
-     * @param string $phoneNumber - Numéro de téléphone pour Mobile Money
-     * @return Transaction|null
      */
     public function createTransaction(Paiement $paiement, string $phoneNumber)
     {
         try {
-            Log::info('FedaPay createTransaction début', [
+            Log::info('🚀 FedaPay createTransaction début', [
                 'paiement_id' => $paiement->id,
                 'montant' => $paiement->montant,
                 'phone' => $phoneNumber,
@@ -41,89 +42,142 @@ class FedaPayService
             $formation = $paiement->formation;
 
             if (!$user || !$formation) {
-                Log::error('User ou Formation manquant', [
+                Log::error('❌ User ou Formation manquant', [
                     'user' => $user ? $user->id : 'null',
                     'formation' => $formation ? $formation->id : 'null',
                 ]);
                 return null;
             }
 
+            // Nettoyer le numéro de téléphone
+            $cleanPhone = $this->cleanPhoneNumber($phoneNumber);
+            
+            Log::info('📱 Numéro nettoyé', [
+                'original' => $phoneNumber,
+                'cleaned' => $cleanPhone,
+            ]);
+
             // Préparer les données de la transaction
             $transactionData = [
-                'description' => "Achat formation: {$formation->titre}",
-                'amount' => (int) $paiement->montant, // Montant en FCFA
+                'description' => "Formation: {$formation->titre}",
+                'amount' => (int) $paiement->montant,
                 'currency' => [
                     'iso' => config('fedapay.currency', 'XOF')
                 ],
-                'callback_url' => route('fedapay.callback'),
+                'callback_url' => config('app.url') . '/api/fedapay/callback',
                 'customer' => [
                     'firstname' => $user->name,
                     'lastname' => $user->name,
                     'email' => $user->email,
                     'phone_number' => [
-                        'number' => $phoneNumber,
-                        'country' => 'BJ' // Bénin par défaut
+                        'number' => $cleanPhone,
+                        'country' => 'BJ'
                     ]
                 ],
             ];
 
-            Log::info('FedaPay transaction data', $transactionData);
+            Log::info('📦 FedaPay transaction data', $transactionData);
 
             // Créer la transaction sur FedaPay
             $transaction = Transaction::create($transactionData);
 
-            Log::info('FedaPay transaction créée', [
+            Log::info('✅ FedaPay transaction créée', [
                 'transaction_id' => $transaction->id,
-                'url' => $transaction->url ?? 'N/A',
                 'status' => $transaction->status ?? 'N/A',
             ]);
 
-            // Mettre à jour le paiement avec les infos FedaPay
+            // Mettre à jour le paiement
             $paiement->update([
                 'transaction_id' => $transaction->id,
-                'payment_url' => $transaction->url ?? null,
                 'fedapay_response' => [
                     'id' => $transaction->id,
                     'status' => $transaction->status ?? null,
                     'reference' => $transaction->reference ?? null,
-                    'created_at' => $transaction->created_at ?? null,
+                    'created_at' => now()->toIso8601String(),
                 ],
             ]);
 
             // Générer le token de paiement
             $token = $transaction->generateToken();
 
-            Log::info('FedaPay token généré', [
-                'token_url' => $token->url ?? 'N/A',
+            Log::info('🔑 FedaPay token généré', [
+                'has_url' => isset($token->url),
+                'url' => $token->url ?? 'N/A',
             ]);
 
-            // Mettre à jour l'URL de paiement avec le token
+            // Mettre à jour l'URL de paiement
             if (isset($token->url)) {
                 $paiement->update(['payment_url' => $token->url]);
+                
+                return $transaction;
+            } else {
+                Log::error('❌ Pas d\'URL de paiement générée');
+                $paiement->update(['statut' => 'echec']);
+                return null;
             }
 
-            return $transaction;
-
         } catch (\FedaPay\Error\ApiConnection $e) {
-            Log::error('FedaPay createTransaction ApiConnection Error: ' . $e->getMessage(), [
+            Log::error('❌ FedaPay ApiConnection Error', [
+                'message' => $e->getMessage(),
                 'paiement_id' => $paiement->id,
+            ]);
+            $paiement->update([
+                'statut' => 'echec',
+                'fedapay_response' => ['error' => $e->getMessage()],
             ]);
             return null;
 
         } catch (\FedaPay\Error\InvalidRequest $e) {
-            Log::error('FedaPay createTransaction InvalidRequest Error: ' . $e->getMessage(), [
+            Log::error('❌ FedaPay InvalidRequest Error', [
+                'message' => $e->getMessage(),
+                'errors' => method_exists($e, 'getErrorMessage') ? $e->getErrorMessage() : 'N/A',
                 'paiement_id' => $paiement->id,
-                'errors' => $e->getErrorMessage(),
+            ]);
+            $paiement->update([
+                'statut' => 'echec',
+                'fedapay_response' => ['error' => $e->getMessage()],
             ]);
             return null;
 
         } catch (\Exception $e) {
-            Log::error('FedaPay createTransaction Error: ' . $e->getMessage(), [
+            Log::error('❌ FedaPay createTransaction Error', [
+                'message' => $e->getMessage(),
                 'paiement_id' => $paiement->id,
                 'trace' => $e->getTraceAsString(),
             ]);
+            $paiement->update([
+                'statut' => 'echec',
+                'fedapay_response' => ['error' => $e->getMessage()],
+            ]);
             return null;
         }
+    }
+
+    /**
+     * Nettoyer le numéro de téléphone
+     */
+    private function cleanPhoneNumber($phone)
+    {
+        // Enlever tous les caractères non numériques sauf le +
+        $phone = preg_replace('/[^\d+]/', '', $phone);
+        
+        // Si le numéro commence par +229, le garder tel quel
+        if (strpos($phone, '+229') === 0) {
+            return $phone;
+        }
+        
+        // Si le numéro commence par 00229, remplacer par +229
+        if (strpos($phone, '00229') === 0) {
+            return '+' . substr($phone, 2);
+        }
+        
+        // Si le numéro commence par 229, ajouter le +
+        if (strpos($phone, '229') === 0) {
+            return '+' . $phone;
+        }
+        
+        // Sinon, ajouter +229 devant
+        return '+229' . ltrim($phone, '0');
     }
 
     /**
@@ -133,7 +187,7 @@ class FedaPayService
     {
         try {
             if (!$paiement->transaction_id) {
-                Log::warning('Pas de transaction_id pour vérifier le statut', [
+                Log::warning('⚠️ Pas de transaction_id', [
                     'paiement_id' => $paiement->id,
                 ]);
                 return false;
@@ -142,18 +196,19 @@ class FedaPayService
             // Récupérer la transaction depuis FedaPay
             $transaction = Transaction::retrieve($paiement->transaction_id);
 
-            Log::info('FedaPay transaction status', [
+            Log::info('🔍 FedaPay transaction status', [
                 'transaction_id' => $transaction->id,
                 'status' => $transaction->status,
             ]);
 
-            // Mettre à jour le paiement selon le statut
+            // Mettre à jour le paiement
             $this->updatePaiementStatus($paiement, $transaction);
 
             return true;
 
         } catch (\Exception $e) {
-            Log::error('Erreur checkTransactionStatus: ' . $e->getMessage(), [
+            Log::error('❌ Erreur checkTransactionStatus', [
+                'message' => $e->getMessage(),
                 'paiement_id' => $paiement->id,
             ]);
             return false;
@@ -166,7 +221,7 @@ class FedaPayService
     public function handleCallback(array $data)
     {
         try {
-            Log::info('FedaPay handleCallback', ['data' => $data]);
+            Log::info('📞 FedaPay handleCallback', ['data' => $data]);
 
             $transactionId = $data['transaction_id'] ?? $data['id'] ?? null;
 
@@ -197,7 +252,7 @@ class FedaPayService
             ];
 
         } catch (\Exception $e) {
-            Log::error('Erreur handleCallback: ' . $e->getMessage());
+            Log::error('❌ Erreur handleCallback: ' . $e->getMessage());
             return [
                 'success' => false,
                 'message' => 'Erreur serveur',
@@ -211,7 +266,7 @@ class FedaPayService
     public function handleWebhook(array $data)
     {
         try {
-            Log::info('FedaPay handleWebhook', ['data' => $data]);
+            Log::info('🔔 FedaPay handleWebhook', ['data' => $data]);
 
             $event = $data['event'] ?? null;
             $transactionData = $data['data'] ?? $data['transaction'] ?? null;
@@ -229,7 +284,7 @@ class FedaPayService
             $paiement = Paiement::where('transaction_id', $transactionId)->first();
 
             if (!$paiement) {
-                Log::warning('Paiement non trouvé pour transaction: ' . $transactionId);
+                Log::warning('⚠️ Paiement non trouvé pour transaction: ' . $transactionId);
                 return [
                     'success' => false,
                     'message' => 'Paiement introuvable',
@@ -251,7 +306,7 @@ class FedaPayService
                     break;
 
                 default:
-                    Log::info('Événement webhook non géré: ' . $event);
+                    Log::info('ℹ️ Événement webhook non géré: ' . $event);
             }
 
             return [
@@ -260,7 +315,8 @@ class FedaPayService
             ];
 
         } catch (\Exception $e) {
-            Log::error('Erreur handleWebhook: ' . $e->getMessage(), [
+            Log::error('❌ Erreur handleWebhook', [
+                'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
             return [
@@ -271,19 +327,19 @@ class FedaPayService
     }
 
     /**
-     * Mettre à jour le statut du paiement selon FedaPay
+     * Mettre à jour le statut du paiement
      */
     protected function updatePaiementStatus(Paiement $paiement, $transaction)
     {
         try {
             $status = $transaction->status ?? 'unknown';
 
-            Log::info('updatePaiementStatus', [
+            Log::info('🔄 updatePaiementStatus', [
                 'paiement_id' => $paiement->id,
                 'fedapay_status' => $status,
             ]);
 
-            // Mapper les statuts FedaPay vers nos statuts
+            // Mapper les statuts FedaPay
             $statusMap = [
                 'approved' => 'complete',
                 'completed' => 'complete',
@@ -297,6 +353,7 @@ class FedaPayService
             // Mettre à jour le paiement
             $paiement->update([
                 'statut' => $newStatus,
+                'date_paiement' => $newStatus === 'complete' ? now() : null,
                 'fedapay_response' => [
                     'id' => $transaction->id ?? null,
                     'status' => $status,
@@ -305,13 +362,10 @@ class FedaPayService
                 ],
             ]);
 
-            // Si le paiement est complété, créer l'inscription et reverser au formateur
+            // Si paiement complété, créer inscription et reverser au formateur
             if ($newStatus === 'complete') {
                 DB::transaction(function () use ($paiement) {
-                    // Créer l'inscription automatiquement
                     $this->createInscription($paiement);
-
-                    // Reverser l'argent au formateur (90%)
                     $this->reverserArgentFormateur($paiement);
                 });
             }
@@ -319,7 +373,8 @@ class FedaPayService
             return true;
 
         } catch (\Exception $e) {
-            Log::error('Erreur updatePaiementStatus: ' . $e->getMessage(), [
+            Log::error('❌ Erreur updatePaiementStatus', [
+                'message' => $e->getMessage(),
                 'paiement_id' => $paiement->id,
             ]);
             return false;
@@ -327,47 +382,78 @@ class FedaPayService
     }
 
     /**
-     * Créer automatiquement l'inscription après paiement réussi
+     * Créer l'inscription automatiquement
      */
     protected function createInscription(Paiement $paiement)
     {
         try {
-            // Vérifier si l'inscription n'existe pas déjà
+            // Vérifier si inscription existe déjà
             $inscriptionExistante = Inscription::where('user_id', $paiement->user_id)
                 ->where('formation_id', $paiement->formation_id)
-                ->whereIn('statut', ['approuvee', 'en_cours', 'terminee'])
+                ->whereIn('statut', ['active', 'approuvee', 'en_cours', 'terminee'])
                 ->exists();
 
             if ($inscriptionExistante) {
-                Log::info('Inscription déjà existante', [
+                Log::info('ℹ️ Inscription déjà existante', [
                     'user_id' => $paiement->user_id,
                     'formation_id' => $paiement->formation_id,
                 ]);
                 return;
             }
 
-            // Créer l'inscription approuvée automatiquement
+            // Créer l'inscription
             $inscription = Inscription::create([
                 'user_id' => $paiement->user_id,
                 'formation_id' => $paiement->formation_id,
-                'statut' => 'approuvee',
-                'date_inscription' => now(),
+                'statut' => 'active',
+                'date_approbation' => now(),
             ]);
 
-            Log::info('Inscription créée automatiquement après paiement', [
+            Log::info('✅ Inscription créée', [
                 'inscription_id' => $inscription->id,
                 'paiement_id' => $paiement->id,
             ]);
 
+            // Ajouter à la communauté
+            $this->ajouterACommunaute($paiement->formation, $paiement->user_id);
+
         } catch (\Exception $e) {
-            Log::error('Erreur createInscription: ' . $e->getMessage(), [
+            Log::error('❌ Erreur createInscription', [
+                'message' => $e->getMessage(),
                 'paiement_id' => $paiement->id,
             ]);
         }
     }
 
     /**
-     * Reverser 90% du montant au formateur
+     * Ajouter à la communauté
+     */
+    protected function ajouterACommunaute($formation, $userId)
+    {
+        try {
+            if (!$formation->communaute) {
+                $communaute = \App\Models\Communaute::create([
+                    'formation_id' => $formation->id,
+                    'nom' => 'Communauté - ' . $formation->titre,
+                    'description' => 'Communauté des apprenants',
+                ]);
+
+                // Ajouter le formateur comme admin
+                $communaute->ajouterMembre($formation->formateur_id, 'admin');
+            } else {
+                $communaute = $formation->communaute;
+            }
+
+            // Ajouter l'apprenant
+            $communaute->ajouterMembre($userId, 'membre');
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur ajouterACommunaute: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Reverser l'argent au formateur
      */
     protected function reverserArgentFormateur(Paiement $paiement)
     {
@@ -376,7 +462,7 @@ class FedaPayService
             $formateur = $formation->formateur;
 
             if (!$formateur) {
-                Log::error('Formateur non trouvé pour la formation', [
+                Log::error('❌ Formateur non trouvé', [
                     'formation_id' => $formation->id,
                 ]);
                 return;
@@ -384,15 +470,15 @@ class FedaPayService
 
             // Calculer les montants
             $montantBrut = $paiement->montant;
-            $commission = config('fedapay.default_commission', 10); // 10% par défaut
+            $commission = $formation->commission_admin ?? 10;
             $montantCommission = ($montantBrut * $commission) / 100;
             $montantFormateur = $montantBrut - $montantCommission;
 
-            // Vérifier si le payout n'existe pas déjà
+            // Vérifier si le payout existe déjà
             $payoutExistant = FormateurPayout::where('paiement_id', $paiement->id)->exists();
 
             if ($payoutExistant) {
-                Log::info('Payout déjà existant', ['paiement_id' => $paiement->id]);
+                Log::info('ℹ️ Payout déjà existant', ['paiement_id' => $paiement->id]);
                 return;
             }
 
@@ -401,27 +487,22 @@ class FedaPayService
                 'formateur_id' => $formateur->id,
                 'paiement_id' => $paiement->id,
                 'formation_id' => $formation->id,
-                'montant_brut' => $montantBrut,
-                'commission_plateforme' => $montantCommission,
-                'montant_net' => $montantFormateur,
-                'statut' => 'en_attente',
-                'methode_paiement' => 'mobile_money',
-                'numero_destinataire' => $formateur->mobile_money_number ?? null,
+                'montant_total' => $montantBrut,
+                'commission_admin' => $montantCommission,
+                'montant_formateur' => $montantFormateur,
+                'statut' => 'pending',
             ]);
 
-            Log::info('Payout créé pour le formateur', [
+            Log::info('✅ Payout créé', [
                 'payout_id' => $payout->id,
                 'formateur_id' => $formateur->id,
                 'montant_net' => $montantFormateur,
             ]);
 
-            // TODO: Intégrer l'API de paiement automatique vers Mobile Money
-            // Pour l'instant, le statut reste "en_attente" jusqu'au traitement manuel
-
         } catch (\Exception $e) {
-            Log::error('Erreur reverserArgentFormateur: ' . $e->getMessage(), [
+            Log::error('❌ Erreur reverserArgentFormateur', [
+                'message' => $e->getMessage(),
                 'paiement_id' => $paiement->id,
-                'trace' => $e->getTraceAsString(),
             ]);
         }
     }

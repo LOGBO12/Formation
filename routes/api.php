@@ -15,11 +15,13 @@ use App\Http\Controllers\Api\CommunauteController;
 use App\Http\Controllers\Api\StatistiquesController;
 use App\Http\Controllers\Api\FormateurController;
 use App\Http\Controllers\Api\PaiementController;
-use App\Http\Controllers\Api\FormateurPaymentController; // ⚠️ AJOUT MANQUANT
+use App\Http\Controllers\Api\FormateurPaymentController;
+use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\NotificationController;
 
 /*
 |--------------------------------------------------------------------------
-| API Routes
+| API Routes - CORRIGÉES
 |--------------------------------------------------------------------------
 */
 
@@ -38,7 +40,7 @@ Route::prefix('auth')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 });
 
-// Domaines publics (pour affichage lors de l'onboarding)
+// Domaines publics
 Route::get('/domaines', [DomaineController::class, 'index']);
 
 // Formation publique par lien
@@ -53,7 +55,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
-    // Onboarding (accessible même si profil non complété)
+    // ==========================================
+    // PROFIL ET PARAMÈTRES (NOUVEAU)
+    // ==========================================
+    Route::prefix('profile')->group(function () {
+        Route::post('/update', [ProfileController::class, 'updateProfile']);
+        Route::post('/change-password', [ProfileController::class, 'changePassword']);
+        Route::post('/update-notifications', [ProfileController::class, 'updateNotifications']);
+        Route::get('/download-data', [ProfileController::class, 'downloadData']);
+        Route::delete('/delete-account', [ProfileController::class, 'deleteAccount']);
+    });
+
+    // Onboarding
     Route::prefix('onboarding')->group(function () {
         Route::post('/select-role', [OnboardingController::class, 'selectRole']);
         Route::post('/complete-profile', [OnboardingController::class, 'completeProfile']);
@@ -68,23 +81,12 @@ Route::middleware('auth:sanctum')->group(function () {
         // ROUTES APPRENANT
         // ==========================================
         Route::prefix('apprenant')->group(function () {
-            // Dashboard
             Route::get('/dashboard', [ApprenantController::class, 'dashboard']);
-            
-            // Mes formations
             Route::get('/mes-formations', [ApprenantController::class, 'mesFormations']);
             Route::get('/formations-terminees', [ApprenantController::class, 'formationsTerminees']);
-            
-            // Catalogue
             Route::get('/catalogue', [ApprenantController::class, 'catalogue']);
-            
-            // Progression
             Route::get('/progression', [ApprenantController::class, 'progression']);
-            
-            // Communautés
             Route::get('/communautes', [ApprenantController::class, 'mesCommunautes']);
-            
-            // Contenu formation
             Route::get('/formations/{formation}/contenu', [ApprenantController::class, 'contenuFormation']);
             Route::get('/chapitres/{chapitre}', [ApprenantController::class, 'lireChapitre']);
             Route::post('/chapitres/{chapitre}/terminer', [ApprenantController::class, 'terminerChapitre']);
@@ -106,7 +108,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Communautés
             Route::get('/mes-communautes', [FormateurController::class, 'mesCommunautes']);
             
-            // 💰 Paiements et Revenus
+            // 💰 Paiements et Revenus (CORRIGÉ)
             Route::get('/paiements-recus', [FormateurPaymentController::class, 'paiementsRecus']);
             Route::get('/payment-settings', [FormateurPaymentController::class, 'getPaymentSettings']);
             Route::post('/payment-settings/update', [FormateurPaymentController::class, 'updatePaymentSettings']);
@@ -116,18 +118,13 @@ Route::middleware('auth:sanctum')->group(function () {
         // ROUTES SUPER ADMIN
         // ==========================================
         Route::prefix('admin')->group(function () {
-            // Gestion des domaines
             Route::get('/domaines', [DomaineController::class, 'adminIndex']);
             Route::post('/domaines', [DomaineController::class, 'store']);
             Route::put('/domaines/{domaine}', [DomaineController::class, 'update']);
             Route::delete('/domaines/{domaine}', [DomaineController::class, 'destroy']);
             Route::patch('/domaines/{domaine}/toggle', [DomaineController::class, 'toggleStatus']);
-            
-            // Gestion des utilisateurs
             Route::get('/users', [AdminController::class, 'users']);
             Route::patch('/users/{user}/toggle-status', [AdminController::class, 'toggleUserStatus']);
-            
-            // Gestion des formations
             Route::get('/formations', [AdminController::class, 'allFormations']);
         });
 
@@ -142,12 +139,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::delete('/{formation}', [FormationController::class, 'destroy']);
             Route::patch('/{formation}/statut', [FormationController::class, 'changeStatut']);
             Route::get('/{formation}/statistiques', [FormationController::class, 'statistiques']);
-            
-            // Modules
             Route::get('/{formation}/modules', [ModuleController::class, 'index']);
             Route::post('/{formation}/modules', [ModuleController::class, 'store']);
-            
-            // Apprenants d'une formation
             Route::get('/{formation}/apprenants', [InscriptionController::class, 'apprenants']);
         });
 
@@ -156,8 +149,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/{module}', [ModuleController::class, 'show']);
             Route::put('/{module}', [ModuleController::class, 'update']);
             Route::delete('/{module}', [ModuleController::class, 'destroy']);
-            
-            // Chapitres
             Route::get('/{module}/chapitres', [ChapitreController::class, 'index']);
             Route::post('/{module}/chapitres', [ChapitreController::class, 'store']);
         });
@@ -168,8 +159,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/{chapitre}', [ChapitreController::class, 'update']);
             Route::delete('/{chapitre}', [ChapitreController::class, 'destroy']);
             Route::post('/{chapitre}/complete', [ChapitreController::class, 'marquerComplete']);
-            
-            // Quiz
             Route::post('/{chapitre}/quiz', [QuizController::class, 'store']);
         });
 
@@ -197,42 +186,51 @@ Route::middleware('auth:sanctum')->group(function () {
         // ROUTES COMMUNAUTÉS
         // ==========================================
         Route::prefix('communautes')->group(function () {
-            // MESSAGES DE BASE
             Route::get('/{communaute}', [CommunauteController::class, 'show']);
             Route::get('/{communaute}/messages', [CommunauteController::class, 'messages']);
             Route::post('/{communaute}/messages', [CommunauteController::class, 'envoyerMessage']);
             Route::post('/{communaute}/annonces', [CommunauteController::class, 'envoyerAnnonce']);
-            
-            // GESTION DES MESSAGES
             Route::put('/messages/{message}', [CommunauteController::class, 'updateMessage']);
             Route::delete('/messages/{message}', [CommunauteController::class, 'supprimerMessage']);
             Route::post('/messages/{message}/epingler', [CommunauteController::class, 'epinglerMessage']);
             Route::post('/messages/{message}/desepingler', [CommunauteController::class, 'desepinglerMessage']);
-            
-            // RÉACTIONS
             Route::post('/messages/{message}/reactions', [CommunauteController::class, 'toggleReaction']);
-            
-            // THREADS / RÉPONSES
             Route::get('/messages/{message}/replies', [CommunauteController::class, 'getReplies']);
-            
-            // VUES / READ RECEIPTS
             Route::post('/messages/{message}/view', [CommunauteController::class, 'markAsViewed']);
-            
-            // MENTIONS
             Route::get('/mentions/unread', [CommunauteController::class, 'getUnreadMentions']);
             Route::post('/mentions/{mention}/read', [CommunauteController::class, 'markMentionAsRead']);
-            
-            // RECHERCHE
             Route::get('/{communaute}/search', [CommunauteController::class, 'searchMessages']);
-            
-            // STATISTIQUES
             Route::get('/{communaute}/stats', [CommunauteController::class, 'getStats']);
-            
-            // MEMBRES
             Route::get('/{communaute}/membres', [CommunauteController::class, 'membres']);
             Route::post('/{communaute}/membres/{userId}/muter', [CommunauteController::class, 'muterMembre']);
             Route::post('/{communaute}/membres/{userId}/demuter', [CommunauteController::class, 'demuterMembre']);
         });
+
+        // 🔔 NOTIFICATIONS
+Route::middleware('auth:sanctum')->group(function () {
+    Route::prefix('notifications')->group(function () {
+        // Liste des notifications
+        Route::get('/', [NotificationController::class, 'index']);
+        
+        // Notifications récentes (5 dernières)
+        Route::get('/recentes', [NotificationController::class, 'recentes']);
+        
+        // Compter les non lues
+        Route::get('/count', [NotificationController::class, 'compterNonLues']);
+        
+        // Marquer une notification comme lue
+        Route::patch('/{notification}/marquer-lu', [NotificationController::class, 'marquerCommeLue']);
+        
+        // Marquer toutes comme lues
+        Route::post('/marquer-tout-lu', [NotificationController::class, 'marquerToutCommeLu']);
+        
+        // Supprimer une notification
+        Route::delete('/{notification}', [NotificationController::class, 'supprimer']);
+        
+        // Supprimer toutes les notifications lues
+        Route::delete('/supprimer-lues', [NotificationController::class, 'supprimerLues']);
+    });
+});
 
         // Statistiques Formateur
         Route::prefix('statistiques')->group(function () {
@@ -243,31 +241,4 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/graphique-inscriptions', [StatistiquesController::class, 'graphiqueInscriptions']);
         });
     });
-});
-
-// ==========================================
-// ROUTE DE TEST (À SUPPRIMER EN PRODUCTION)
-// ==========================================
-Route::get('/test-storage', function () {
-    $chapitresPath = storage_path('app/public/chapitres');
-    $publicStoragePath = public_path('storage');
-    
-    $chapitres = [];
-    if (file_exists($chapitresPath)) {
-        $files = scandir($chapitresPath);
-        $chapitres = array_filter($files, function($file) use ($chapitresPath) {
-            return is_file($chapitresPath . '/' . $file);
-        });
-    }
-    
-    return response()->json([
-        'storage_path_exists' => file_exists($chapitresPath),
-        'storage_path' => $chapitresPath,
-        'public_storage_exists' => file_exists($publicStoragePath),
-        'public_storage_is_link' => is_link($publicStoragePath),
-        'public_storage_target' => is_link($publicStoragePath) ? readlink($publicStoragePath) : null,
-        'files_in_chapitres' => array_values($chapitres),
-        'app_url' => config('app.url'),
-        'storage_url' => asset('storage'),
-    ]);
 });

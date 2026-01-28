@@ -5,12 +5,21 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Formation;
 use App\Models\Communaute;
+use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
 
 class FormationController extends Controller
 {
+
+    protected $notificationService;
+
+    public function __construct(NotificationService $notificationService)
+    {
+        $this->notificationService = $notificationService;
+    }
+
     /**
      * Liste des formations du formateur connecté
      */
@@ -71,6 +80,8 @@ class FormationController extends Controller
     }
 
     $formation = Formation::create($data);
+
+    $this->notificationService->notifierNouvelleFormation($formation);
 
     return response()->json([
         'success' => true,
@@ -240,5 +251,21 @@ class FormationController extends Controller
             'success' => true,
             'statistiques' => $stats,
         ]);
+    }
+
+    /**
+     * Publier une formation
+     */
+    public function publier(Formation $formation)
+    {
+        $formation->update(['statut' => 'publiee']);
+
+        // 🆕 Notifier tous les apprenants
+        $this->notificationService->notifierNouvelleFormation($formation);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Formation publiée avec succès',
+        ], 200);
     }
 }

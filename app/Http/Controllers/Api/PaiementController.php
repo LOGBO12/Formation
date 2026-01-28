@@ -34,7 +34,7 @@ class PaiementController extends Controller
             // Vérifier si l'utilisateur est déjà inscrit
             $inscriptionExistante = $formation->inscriptions()
                 ->where('user_id', $user->id)
-                ->whereIn('statut', ['approuvee', 'en_cours', 'terminee'])
+                ->whereIn('statut', ['active', 'approuvee', 'en_cours', 'terminee'])
                 ->exists();
 
             if ($inscriptionExistante) {
@@ -68,19 +68,19 @@ class PaiementController extends Controller
                 ], 200);
             }
 
-            // ✅ CORRECTION : Créer le paiement avec metadata en JSON
+            // Créer le paiement
             $paiement = Paiement::create([
                 'user_id' => $user->id,
                 'formation_id' => $formation->id,
                 'montant' => $formation->prix,
                 'statut' => 'en_attente',
                 'methode_paiement' => 'fedapay',
-                'metadata' => json_encode([  // ⚠️ IMPORTANT : Convertir en JSON
+                'metadata' => [
                     'phone_number' => $request->phone_number,
                     'formation_titre' => $formation->titre,
                     'user_name' => $user->name,
                     'user_email' => $user->email,
-                ]),
+                ],
             ]);
 
             // Créer la transaction FedaPay
@@ -160,43 +160,96 @@ class PaiementController extends Controller
     }
 
     /**
-     * Callback après paiement FedaPay (redirection utilisateur)
+     * ⚠️ CALLBACK CORRIGÉ - Redirection vers le frontend avec les bons paramètres
      */
     public function callback(Request $request)
     {
         try {
-            $transactionId = $request->query('transaction_id') ?? $request->query('id');
+            Log::info('📞 Callback FedaPay reçu', [
+                'query_params' => $request->all(),
+                'headers' => $request->headers->all(),
+            ]);
+
+            // Récupérer l'ID de transaction de différentes manières possibles
+            $transactionId = $request->query('id') 
+                ?? $request->query('transaction_id') 
+                ?? $request->query('reference');
 
             if (!$transactionId) {
-                return redirect(config('app.frontend_url') . '/payment/callback?status=error&message=Transaction ID manquant');
+                Log::warning('⚠️ Transaction ID manquant dans callback', [
+                    'all_params' => $request->all()
+                ]);
+                
+                return redirect(config('app.frontend_url') . '/payment/callback?payment=error&message=Transaction+ID+manquant');
             }
+
+            Log::info('🔍 Recherche du paiement', ['transaction_id' => $transactionId]);
 
             // Récupérer le paiement
             $paiement = Paiement::where('transaction_id', $transactionId)->first();
 
             if (!$paiement) {
-                Log::warning('Paiement non trouvé pour transaction: ' . $transactionId);
-                return redirect(config('app.frontend_url') . '/payment/callback?status=error&message=Paiement introuvable');
+                Log::warning('⚠️ Paiement non trouvé', ['transaction_id' => $transactionId]);
+                
+                return redirect(
+                    config('app.frontend_url') . '/payment/callback?payment=error&message=Paiement+introuvable'
+                );
             }
+
+            Log::info('✅ Paiement trouvé', [
+                'paiement_id' => $paiement->id,
+                'statut_actuel' => $paiement->statut,
+            ]);
 
             // Vérifier le statut sur FedaPay
             $this->fedaPayService->checkTransactionStatus($paiement);
             $paiement->refresh();
 
-            // Construire l'URL de redirection avec les paramètres
-            $redirectUrl = config('app.frontend_url') . '/payment/callback';
-            $params = [
-                'status' => $paiement->statut,
-                'transaction_id' => $transactionId,
-                'amount' => $paiement->montant,
-                'formation_id' => $paiement->formation_id,
-            ];
+            Log::info('🔄 Statut mis à jour', [
+                'paiement_id' => $paiement->id,
+                'nouveau_statut' => $paiement->statut,
+            ]);
 
-            return redirect($redirectUrl . '?' . http_build_query($params));
+            // Construire l'URL de redirection avec les bons paramètres
+            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
+            $redirectUrl = $frontendUrl . '/payment/callback';
+
+            // Paramètres selon le statut
+            if ($paiement->statut === 'complete') {
+                $params = [
+                    'payment' => 'success',
+                    'transaction_id' => $transactionId,
+                    'formation_id' => $paiement->formation_id,
+                    'amount' => $paiement->montant,
+                ];
+            } elseif ($paiement->statut === 'en_attente') {
+                $params = [
+                    'payment' => 'pending',
+                    'transaction_id' => $transactionId,
+                    'formation_id' => $paiement->formation_id,
+                ];
+            } else {
+                $params = [
+                    'payment' => 'error',
+                    'transaction_id' => $transactionId,
+                    'message' => 'Le paiement n\'a pas pu être validé',
+                ];
+            }
+
+            $finalUrl = $redirectUrl . '?' . http_build_query($params);
+
+            Log::info('➡️ Redirection vers', ['url' => $finalUrl]);
+
+            return redirect($finalUrl);
 
         } catch (\Exception $e) {
-            Log::error('Erreur callback: ' . $e->getMessage());
-            return redirect(config('app.frontend_url') . '/payment/callback?status=error&message=Erreur serveur');
+            Log::error('❌ Erreur callback: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return redirect(
+                config('app.frontend_url') . '/payment/callback?payment=error&message=Erreur+serveur'
+            );
         }
     }
 
@@ -206,7 +259,7 @@ class PaiementController extends Controller
     public function webhook(Request $request)
     {
         try {
-            Log::info('Webhook FedaPay reçu', ['data' => $request->all()]);
+            Log::info('🔔 Webhook FedaPay reçu', ['data' => $request->all()]);
 
             // Traiter le webhook
             $result = $this->fedaPayService->handleWebhook($request->all());
@@ -224,7 +277,7 @@ class PaiementController extends Controller
             }
 
         } catch (\Exception $e) {
-            Log::error('Erreur webhook: ' . $e->getMessage(), [
+            Log::error('❌ Erreur webhook: ' . $e->getMessage(), [
                 'data' => $request->all(),
                 'trace' => $e->getTraceAsString(),
             ]);
