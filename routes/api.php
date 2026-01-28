@@ -18,6 +18,10 @@ use App\Http\Controllers\Api\PaiementController;
 use App\Http\Controllers\Api\FormateurPaymentController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\PublicController;
+use App\Http\Controllers\Api\AdminContactController;
+use App\Http\Controllers\Api\AdminNewsletterController;
+use App\Http\Controllers\Api\AdminRevenusController;
 
 /*
 |--------------------------------------------------------------------------
@@ -25,9 +29,18 @@ use App\Http\Controllers\Api\NotificationController;
 |--------------------------------------------------------------------------
 */
 
+
+
 // ==========================================
 // ROUTES PUBLIQUES (pas d'authentification)
 // ==========================================
+
+Route::post('/public/contact', [PublicController::class, 'submitContact']);
+
+// Newsletter
+Route::post('/public/newsletter/subscribe', [PublicController::class, 'subscribeNewsletter']);
+Route::post('/public/newsletter/unsubscribe', [PublicController::class, 'unsubscribeNewsletter']);
+
 
 // Callbacks FedaPay (DOIVENT ÊTRE AVANT auth:sanctum)
 Route::get('/fedapay/callback', [PaiementController::class, 'callback'])->name('fedapay.callback');
@@ -126,7 +139,27 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/users', [AdminController::class, 'users']);
             Route::patch('/users/{user}/toggle-status', [AdminController::class, 'toggleUserStatus']);
             Route::get('/formations', [AdminController::class, 'allFormations']);
+
+            // Gestion des contacts
+        Route::get('/contacts', [AdminContactController::class, 'index']);
+        Route::get('/contacts/{submission}', [AdminContactController::class, 'show']);
+        Route::patch('/contacts/{submission}/status', [AdminContactController::class, 'updateStatus']);
+        Route::post('/contacts/{submission}/respond', [AdminContactController::class, 'respond']);
+        Route::delete('/contacts/{submission}', [AdminContactController::class, 'destroy']);
+
+        // Gestion de la newsletter
+        Route::get('/newsletter/subscribers', [AdminNewsletterController::class, 'index']);
+        Route::delete('/newsletter/subscribers/{subscriber}', [AdminNewsletterController::class, 'destroy']);
+        Route::get('/newsletter/export', [AdminNewsletterController::class, 'export']);
+
+        // Gestion des revenus
+        Route::get('/revenus', [AdminRevenusController::class, 'index']);
+            Route::get('/revenus/export', [AdminRevenusController::class, 'export']);
+            Route::get('/revenus/statistics', [AdminRevenusController::class, 'statistics']);
+        
         });
+
+        
 
         // ==========================================
         // ROUTES FORMATIONS (Formateur)
