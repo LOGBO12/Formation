@@ -4,163 +4,243 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Paiement;
+use App\Models\Formation;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class AdminRevenusController extends Controller
 {
     /**
-     * Vue d'ensemble des revenus
+     * Liste des paiements avec statistiques
      */
     public function index(Request $request)
     {
-        if (!$request->user()->isSuperAdmin()) {
+        try {
+            $status = $request->get('status', 'all');
+            $period = $request->get('period', 'all');
+            $search = $request->get('search', '');
+
+            Log::info('📊 Admin Revenus - Requête reçue', [
+                'status' => $status,
+                'period' => $period,
+                'search' => $search,
+            ]);
+
+            // Query de base
+            $query = Paiement::with(['user', 'formation.domaine', 'formation.formateur']);
+
+            // Filtre par statut
+            if ($status !== 'all') {
+                $query->where('statut', $status);
+            }
+
+            // Filtre par période
+            if ($period !== 'all') {
+                $query->where('created_at', '>=', $this->getPeriodDate($period));
+            }
+
+            // Recherche
+            if (!empty($search)) {
+                $query->where(function ($q) use ($search) {
+                    $q->whereHas('user', function ($q2) use ($search) {
+                        $q2->where('name', 'like', "%{$search}%")
+                           ->orWhere('email', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('formation', function ($q2) use ($search) {
+                        $q2->where('titre', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('formation.formateur', function ($q2) use ($search) {
+                        $q2->where('name', 'like', "%{$search}%");
+                    });
+                });
+            }
+
+            // Récupérer les paiements
+            $paiements = $query->orderBy('created_at', 'desc')->get();
+
+            // Calculer les statistiques
+            $stats = $this->calculateStats($period);
+
+            Log::info('✅ Admin Revenus - Données chargées', [
+                'total_paiements' => $paiements->count(),
+                'total_revenus' => $stats['total_revenus'],
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'paiements' => $paiements,
+                'stats' => $stats,
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur AdminRevenusController@index', [
+                'message' => $e->getMessage(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => 'Non autorisé',
-            ], 403);
+                'message' => 'Erreur lors du chargement des revenus',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
         }
-
-        $status = $request->input('status', 'all');
-        $period = $request->input('period', 'all');
-        $search = $request->input('search', '');
-
-        $query = Paiement::with(['apprenant:id,name,email', 'formation:id,titre', 'formateur:id,name'])
-            ->orderBy('created_at', 'desc');
-
-        // Filtre par statut
-        if ($status !== 'all') {
-            $query->where('statut', $status);
-        }
-
-        // Filtre par période
-        switch ($period) {
-            case 'today':
-                $query->whereDate('created_at', today());
-                break;
-            case 'week':
-                $query->whereBetween('created_at', [
-                    now()->startOfWeek(),
-                    now()->endOfWeek()
-                ]);
-                break;
-            case 'month':
-                $query->whereMonth('created_at', now()->month)
-                      ->whereYear('created_at', now()->year);
-                break;
-            case 'year':
-                $query->whereYear('created_at', now()->year);
-                break;
-        }
-
-        // Recherche
-        if ($search) {
-            $query->where(function ($q) use ($search) {
-                $q->whereHas('apprenant', function ($sq) use ($search) {
-                    $sq->where('name', 'like', "%{$search}%")
-                       ->orWhere('email', 'like', "%{$search}%");
-                })
-                ->orWhereHas('formation', function ($sq) use ($search) {
-                    $sq->where('titre', 'like', "%{$search}%");
-                })
-                ->orWhereHas('formateur', function ($sq) use ($search) {
-                    $sq->where('name', 'like', "%{$search}%");
-                });
-            });
-        }
-
-        $paiements = $query->paginate(50);
-
-        // Statistiques
-        $stats = [
-            'total_revenus' => Paiement::where('statut', 'completed')->sum('montant'),
-            'revenu_mois' => Paiement::where('statut', 'completed')
-                ->whereMonth('created_at', now()->month)
-                ->whereYear('created_at', now()->year)
-                ->sum('montant'),
-            'revenu_semaine' => Paiement::where('statut', 'completed')
-                ->whereBetween('created_at', [
-                    now()->startOfWeek(),
-                    now()->endOfWeek()
-                ])
-                ->sum('montant'),
-            'revenu_aujourd_hui' => Paiement::where('statut', 'completed')
-                ->whereDate('created_at', today())
-                ->sum('montant'),
-            'total_transactions' => Paiement::where('statut', 'completed')->count(),
-            'evolution_mois' => $this->calculateEvolutionMois(),
-        ];
-
-        return response()->json([
-            'success' => true,
-            'paiements' => $paiements,
-            'stats' => $stats,
-        ]);
     }
 
     /**
-     * Exporter les revenus en CSV
+     * Calculer les statistiques
+     */
+    private function calculateStats($period = 'all')
+    {
+        try {
+            // Total revenus (tous les temps)
+            $totalRevenus = Paiement::where('statut', 'complete')->sum('montant');
+
+            // Revenus du mois en cours
+            $revenuMois = Paiement::where('statut', 'complete')
+                ->whereMonth('created_at', now()->month)
+                ->whereYear('created_at', now()->year)
+                ->sum('montant');
+
+            // Revenus du mois précédent pour calculer l'évolution
+            $revenuMoisPrecedent = Paiement::where('statut', 'complete')
+                ->whereMonth('created_at', now()->subMonth()->month)
+                ->whereYear('created_at', now()->subMonth()->year)
+                ->sum('montant');
+
+            // Évolution en pourcentage
+            $evolutionMois = 0;
+            if ($revenuMoisPrecedent > 0) {
+                $evolutionMois = round((($revenuMois - $revenuMoisPrecedent) / $revenuMoisPrecedent) * 100, 2);
+            } elseif ($revenuMois > 0) {
+                $evolutionMois = 100;
+            }
+
+            // Total transactions
+            $totalTransactions = Paiement::where('statut', 'complete')->count();
+
+            // Revenus aujourd'hui
+            $revenuAujourdhui = Paiement::where('statut', 'complete')
+                ->whereDate('created_at', today())
+                ->sum('montant');
+
+            // Revenus cette semaine
+            $revenuSemaine = Paiement::where('statut', 'complete')
+                ->whereBetween('created_at', [
+                    now()->startOfWeek(),
+                    now()->endOfWeek(),
+                ])
+                ->sum('montant');
+
+            return [
+                'total_revenus' => round($totalRevenus, 2),
+                'revenu_mois' => round($revenuMois, 2),
+                'evolution_mois' => $evolutionMois,
+                'total_transactions' => $totalTransactions,
+                'revenu_aujourd_hui' => round($revenuAujourdhui, 2),
+                'revenu_semaine' => round($revenuSemaine, 2),
+            ];
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur calculateStats', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return [
+                'total_revenus' => 0,
+                'revenu_mois' => 0,
+                'evolution_mois' => 0,
+                'total_transactions' => 0,
+                'revenu_aujourd_hui' => 0,
+                'revenu_semaine' => 0,
+            ];
+        }
+    }
+
+    /**
+     * Obtenir la date de début selon la période
+     */
+    private function getPeriodDate($period)
+    {
+        switch ($period) {
+            case 'today':
+                return Carbon::today();
+            case 'week':
+                return Carbon::now()->startOfWeek();
+            case 'month':
+                return Carbon::now()->startOfMonth();
+            case 'year':
+                return Carbon::now()->startOfYear();
+            default:
+                return Carbon::now()->subYears(10); // Tous les temps
+        }
+    }
+
+    /**
+     * Exporter les données
      */
     public function export(Request $request)
     {
-        if (!$request->user()->isSuperAdmin()) {
+        try {
+            $status = $request->get('status', 'all');
+            $period = $request->get('period', 'all');
+
+            // Query de base
+            $query = Paiement::with(['user', 'formation.formateur']);
+
+            // Filtres
+            if ($status !== 'all') {
+                $query->where('statut', $status);
+            }
+
+            if ($period !== 'all') {
+                $query->where('created_at', '>=', $this->getPeriodDate($period));
+            }
+
+            $paiements = $query->orderBy('created_at', 'desc')->get();
+
+            // Préparer les données pour l'export
+            $data = [];
+            $data[] = ['Date', 'Apprenant', 'Email', 'Formation', 'Formateur', 'Montant', 'Commission', 'Statut']; // Header
+
+            foreach ($paiements as $paiement) {
+                $commission = ($paiement->formation->commission_admin ?? 10) / 100 * $paiement->montant;
+                
+                $data[] = [
+                    $paiement->created_at->format('Y-m-d H:i'),
+                    $paiement->user->name ?? 'N/A',
+                    $paiement->user->email ?? 'N/A',
+                    $paiement->formation->titre ?? 'N/A',
+                    $paiement->formation->formateur->name ?? 'N/A',
+                    $paiement->montant,
+                    $commission,
+                    $paiement->statut,
+                ];
+            }
+
+            Log::info('✅ Export revenus généré', [
+                'total_lignes' => count($data),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'data' => $data,
+                'count' => count($data) - 1, // Sans le header
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur export revenus', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => 'Non autorisé',
-            ], 403);
+                'message' => 'Erreur lors de l\'export',
+            ], 500);
         }
-
-        $status = $request->input('status', 'all');
-        $period = $request->input('period', 'all');
-
-        $query = Paiement::with(['apprenant', 'formation', 'formateur']);
-
-        // Appliquer les mêmes filtres
-        if ($status !== 'all') {
-            $query->where('statut', $status);
-        }
-
-        switch ($period) {
-            case 'today':
-                $query->whereDate('created_at', today());
-                break;
-            case 'week':
-                $query->whereBetween('created_at', [
-                    now()->startOfWeek(),
-                    now()->endOfWeek()
-                ]);
-                break;
-            case 'month':
-                $query->whereMonth('created_at', now()->month)
-                      ->whereYear('created_at', now()->year);
-                break;
-            case 'year':
-                $query->whereYear('created_at', now()->year);
-                break;
-        }
-
-        $paiements = $query->get();
-
-        $data = $paiements->map(function ($p) {
-            return [
-                'Date' => $p->created_at->format('Y-m-d H:i:s'),
-                'Apprenant' => $p->apprenant->name ?? 'N/A',
-                'Email Apprenant' => $p->apprenant->email ?? 'N/A',
-                'Formation' => $p->formation->titre ?? 'N/A',
-                'Formateur' => $p->formateur->name ?? 'N/A',
-                'Montant' => $p->montant,
-                'Commission (10%)' => $p->montant * 0.1,
-                'Part Formateur (90%)' => $p->montant * 0.9,
-                'Statut' => $p->statut,
-                'Méthode' => $p->methode_paiement ?? 'Mobile Money',
-                'Transaction ID' => $p->transaction_id ?? 'N/A',
-            ];
-        });
-
-        return response()->json([
-            'success' => true,
-            'data' => $data,
-        ]);
     }
 
     /**
@@ -168,79 +248,121 @@ class AdminRevenusController extends Controller
      */
     public function statistics(Request $request)
     {
-        if (!$request->user()->isSuperAdmin()) {
+        try {
+            $stats = [
+                'revenus_par_mois' => $this->getRevenuParMois(),
+                'revenus_par_formation' => $this->getRevenuParFormation(),
+                'revenus_par_formateur' => $this->getRevenuParFormateur(),
+                'top_formations' => $this->getTopFormations(),
+            ];
+
+            return response()->json([
+                'success' => true,
+                'statistics' => $stats,
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur statistics', [
+                'message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => 'Non autorisé',
-            ], 403);
+                'message' => 'Erreur lors du chargement des statistiques',
+            ], 500);
         }
-
-        // Revenus par mois (12 derniers mois)
-        $revenusParMois = Paiement::where('statut', 'completed')
-            ->where('created_at', '>=', now()->subMonths(12))
-            ->select(
-                DB::raw('YEAR(created_at) as year'),
-                DB::raw('MONTH(created_at) as month'),
-                DB::raw('SUM(montant) as total')
-            )
-            ->groupBy('year', 'month')
-            ->orderBy('year', 'desc')
-            ->orderBy('month', 'desc')
-            ->get();
-
-        // Top formateurs par revenus
-        $topFormateurs = Paiement::where('statut', 'completed')
-            ->select(
-                'formateur_id',
-                DB::raw('SUM(montant) as total_revenus'),
-                DB::raw('COUNT(*) as nombre_ventes')
-            )
-            ->with('formateur:id,name,email')
-            ->groupBy('formateur_id')
-            ->orderBy('total_revenus', 'desc')
-            ->limit(10)
-            ->get();
-
-        // Top formations par revenus
-        $topFormations = Paiement::where('statut', 'completed')
-            ->select(
-                'formation_id',
-                DB::raw('SUM(montant) as total_revenus'),
-                DB::raw('COUNT(*) as nombre_ventes')
-            )
-            ->with('formation:id,titre')
-            ->groupBy('formation_id')
-            ->orderBy('total_revenus', 'desc')
-            ->limit(10)
-            ->get();
-
-        return response()->json([
-            'success' => true,
-            'revenus_par_mois' => $revenusParMois,
-            'top_formateurs' => $topFormateurs,
-            'top_formations' => $topFormations,
-        ]);
     }
 
     /**
-     * Calculer l'évolution du mois en cours par rapport au mois précédent
+     * Revenus par mois (12 derniers mois)
      */
-    private function calculateEvolutionMois()
+    private function getRevenuParMois()
     {
-        $moisActuel = Paiement::where('statut', 'completed')
-            ->whereMonth('created_at', now()->month)
-            ->whereYear('created_at', now()->year)
-            ->sum('montant');
+        $revenus = Paiement::where('statut', 'complete')
+            ->where('created_at', '>=', now()->subMonths(12))
+            ->selectRaw('DATE_FORMAT(created_at, "%Y-%m") as mois, SUM(montant) as total')
+            ->groupBy('mois')
+            ->orderBy('mois')
+            ->get();
 
-        $moisPrecedent = Paiement::where('statut', 'completed')
-            ->whereMonth('created_at', now()->subMonth()->month)
-            ->whereYear('created_at', now()->subMonth()->year)
-            ->sum('montant');
+        return $revenus;
+    }
 
-        if ($moisPrecedent == 0) {
-            return $moisActuel > 0 ? 100 : 0;
-        }
+    /**
+     * Revenus par formation (top 10)
+     */
+    private function getRevenuParFormation()
+    {
+        $revenus = Paiement::where('statut', 'complete')
+            ->with('formation')
+            ->select('formation_id', DB::raw('SUM(montant) as total'), DB::raw('COUNT(*) as nombre_ventes'))
+            ->groupBy('formation_id')
+            ->orderByDesc('total')
+            ->limit(10)
+            ->get()
+            ->map(function ($item) {
+                return [
+                    'formation_id' => $item->formation_id,
+                    'formation_titre' => $item->formation->titre ?? 'N/A',
+                    'revenus' => round($item->total, 2),
+                    'nombre_ventes' => $item->nombre_ventes,
+                ];
+            });
 
-        return round((($moisActuel - $moisPrecedent) / $moisPrecedent) * 100, 2);
+        return $revenus;
+    }
+
+    /**
+     * Revenus par formateur (top 10)
+     */
+    private function getRevenuParFormateur()
+    {
+        $revenus = Paiement::where('statut', 'complete')
+            ->with('formation.formateur')
+            ->select('formation_id', DB::raw('SUM(montant) as total'))
+            ->groupBy('formation_id')
+            ->get()
+            ->groupBy(function ($item) {
+                return $item->formation->formateur_id ?? 'N/A';
+            })
+            ->map(function ($items, $formateurId) {
+                $formateur = User::find($formateurId);
+                return [
+                    'formateur_id' => $formateurId,
+                    'formateur_nom' => $formateur->name ?? 'N/A',
+                    'revenus' => round($items->sum('total'), 2),
+                    'nombre_formations' => $items->count(),
+                ];
+            })
+            ->sortByDesc('revenus')
+            ->take(10)
+            ->values();
+
+        return $revenus;
+    }
+
+    /**
+     * Top formations par nombre de ventes
+     */
+    private function getTopFormations()
+    {
+        $top = Paiement::where('statut', 'complete')
+            ->with('formation.formateur')
+            ->select('formation_id', DB::raw('COUNT(*) as nombre_ventes'), DB::raw('SUM(montant) as revenus'))
+            ->groupBy('formation_id')
+            ->orderByDesc('nombre_ventes')
+            ->limit(5)
+            ->get()
+            ->map(function ($item) {
+                return [
+                    'formation_id' => $item->formation_id,
+                    'formation_titre' => $item->formation->titre ?? 'N/A',
+                    'formateur_nom' => $item->formation->formateur->name ?? 'N/A',
+                    'nombre_ventes' => $item->nombre_ventes,
+                    'revenus' => round($item->revenus, 2),
+                ];
+            });
+
+        return $top;
     }
 }
