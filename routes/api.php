@@ -51,6 +51,10 @@ Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+
+    Route::post('/verify-email', [AuthController::class, 'verifyEmail']);
+    Route::post('/resend-verification', [AuthController::class, 'resendVerification']);
+
 });
 
 // Domaines publics
@@ -68,6 +72,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
+    Route::post('/auth/confirm-password', [AuthController::class, 'confirmPassword']);
+    
     // ==========================================
     // PROFIL ET PARAMÈTRES (NOUVEAU)
     // ==========================================
