@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\PublicController;
 use App\Http\Controllers\Api\AdminContactController;
 use App\Http\Controllers\Api\AdminNewsletterController;
 use App\Http\Controllers\Api\AdminRevenusController;
+use App\Http\Controllers\Api\PublicFormationController;
 
 /*
 |--------------------------------------------------------------------------
@@ -63,6 +64,16 @@ Route::get('/domaines', [DomaineController::class, 'index']);
 // Formation publique par lien
 Route::get('/formations/lien/{lienPublic}', [FormationController::class, 'showByLink']);
 
+Route::prefix('public/formations')->group(function () {
+    // Liste des formations publiques
+    Route::get('/', [PublicFormationController::class, 'index']);
+    
+    // Détails d'une formation par lien public
+    Route::get('/{lienPublic}', [PublicFormationController::class, 'show']);
+    
+    // Statistiques publiques
+    Route::get('/stats/general', [PublicFormationController::class, 'stats']);
+});
 // ==========================================
 // ROUTES PROTÉGÉES (authentification requise)
 // ==========================================
@@ -127,7 +138,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Communautés
             Route::get('/mes-communautes', [FormateurController::class, 'mesCommunautes']);
             
-            // 💰 Paiements et Revenus (CORRIGÉ)
+            //  Paiements et Revenus (CORRIGÉ)
             Route::get('/paiements-recus', [FormateurPaymentController::class, 'paiementsRecus']);
             Route::get('/payment-settings', [FormateurPaymentController::class, 'getPaymentSettings']);
             Route::post('/payment-settings/update', [FormateurPaymentController::class, 'updatePaymentSettings']);
@@ -246,8 +257,8 @@ Route::middleware('auth:sanctum')->group(function () {
         });
 
         // 🔔 NOTIFICATIONS
-Route::middleware('auth:sanctum')->group(function () {
-    Route::prefix('notifications')->group(function () {
+        Route::middleware('auth:sanctum')->group(function () {
+        Route::prefix('notifications')->group(function () {
         // Liste des notifications
         Route::get('/', [NotificationController::class, 'index']);
         
