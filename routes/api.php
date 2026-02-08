@@ -74,6 +74,7 @@ Route::prefix('public/formations')->group(function () {
     // Statistiques publiques
     Route::get('/stats/general', [PublicFormationController::class, 'stats']);
 });
+
 // ==========================================
 // ROUTES PROTÉGÉES (authentification requise)
 // ==========================================
@@ -85,9 +86,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/auth/confirm-password', [AuthController::class, 'confirmPassword']);
     
-    // ==========================================
-    // PROFIL ET PARAMÈTRES (NOUVEAU)
-    // ==========================================
     Route::prefix('profile')->group(function () {
         Route::post('/update', [ProfileController::class, 'updateProfile']);
         Route::post('/change-password', [ProfileController::class, 'changePassword']);
@@ -142,6 +140,12 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/paiements-recus', [FormateurPaymentController::class, 'paiementsRecus']);
             Route::get('/payment-settings', [FormateurPaymentController::class, 'getPaymentSettings']);
             Route::post('/payment-settings/update', [FormateurPaymentController::class, 'updatePaymentSettings']);
+
+            // 💰 Retraits
+Route::get('/withdrawals/balance', [App\Http\Controllers\Api\FormateurWithdrawalController::class, 'getBalance']);
+Route::post('/withdrawals/request', [App\Http\Controllers\Api\FormateurWithdrawalController::class, 'requestWithdrawal']);
+Route::get('/withdrawals/history', [App\Http\Controllers\Api\FormateurWithdrawalController::class, 'history']);
+Route::post('/withdrawals/{withdrawal}/cancel', [App\Http\Controllers\Api\FormateurWithdrawalController::class, 'cancel']);
         });
 
         // ==========================================
@@ -173,6 +177,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/revenus', [AdminRevenusController::class, 'index']);
             Route::get('/revenus/export', [AdminRevenusController::class, 'export']);
             Route::get('/revenus/statistics', [AdminRevenusController::class, 'statistics']);
+
+
+        // 💰 Gestion des retraits formateurs
+Route::get('/withdrawals', [App\Http\Controllers\Api\AdminWithdrawalController::class, 'index']);
+Route::post('/withdrawals/{withdrawal}/approve', [App\Http\Controllers\Api\AdminWithdrawalController::class, 'approve']);
+Route::post('/withdrawals/{withdrawal}/reject', [App\Http\Controllers\Api\AdminWithdrawalController::class, 'reject']);
+Route::post('/withdrawals/{withdrawal}/complete', [App\Http\Controllers\Api\AdminWithdrawalController::class, 'markAsCompleted']);
+Route::delete('/withdrawals/{withdrawal}', [App\Http\Controllers\Api\AdminWithdrawalController::class, 'destroy']);
         
         });
 
